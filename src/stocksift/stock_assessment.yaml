@@ -1,0 +1,144 @@
+input_columns:
+  prices:
+    description: >
+      Wide price table. The date column is defined below; every other column
+      is interpreted as a ticker identifier containing closing prices.
+    columns:
+      date:
+        column: date
+        description: Trading date.
+
+  ratios:
+    description: Point-in-time valuation and per-share fundamental data.
+    columns:
+      ticker:
+        column: ticker
+        description: Stock ticker identifier.
+      date:
+        column: date
+        description: Observation date.
+      bps:
+        column: BPS
+        description: Book value per share.
+      per:
+        column: PER
+        description: Price-to-earnings ratio.
+      pbr:
+        column: PBR
+        description: Price-to-book ratio.
+      eps:
+        column: EPS
+        description: Earnings per share.
+      div:
+        column: DIV
+        description: Dividend yield as supplied by the input data.
+      dps:
+        column: DPS
+        description: Dividend per share.
+
+features:
+  valuation:
+    per_smoothed:
+      label: Smoothed PER
+      description: >
+        Trailing 20-observation median of positive PER values as of the
+        assessment date.
+    pbr_smoothed:
+      label: Smoothed PBR
+      description: >
+        Trailing 20-observation median of positive PBR values as of the
+        assessment date.
+    per_hist_pct:
+      label: PER Historical Percentile
+      description: >
+        Percentile of current smoothed PER within the stock's own trailing
+        12-month valuation history. Higher means more expensive relative to
+        its recent history.
+    pbr_hist_pct:
+      label: PBR Historical Percentile
+      description: >
+        Percentile of current smoothed PBR within the stock's own trailing
+        12-month valuation history. Higher means more expensive relative to
+        its recent history.
+    per_change_12m:
+      label: 12M PER Change
+      description: >
+        Change in smoothed PER over the prior 12 months.
+    pbr_change_12m:
+      label: 12M PBR Change
+      description: >
+        Change in smoothed PBR over the prior 12 months.
+    per_expansion_pct:
+      label: PER Expansion Percentile
+      description: >
+        Cross-sectional percentile of 12-month smoothed PER change. Higher
+        means greater valuation expansion than other stocks in the universe.
+    pbr_expansion_pct:
+      label: PBR Expansion Percentile
+      description: >
+        Cross-sectional percentile of 12-month smoothed PBR change. Higher
+        means greater valuation expansion than other stocks in the universe.
+
+  fundamentals:
+    eps_growth_12m:
+      label: 12M EPS Growth
+      description: Historical 12-month EPS growth rate.
+    bps_growth_12m:
+      label: 12M BPS Growth
+      description: Historical 12-month BPS growth rate.
+    dps_growth_12m:
+      label: 12M DPS Growth
+      description: Historical 12-month DPS growth rate.
+    eps_growth_pct:
+      label: EPS Growth Percentile
+      description: >
+        Cross-sectional percentile of 12-month EPS growth. Higher means
+        stronger historical earnings growth.
+    bps_growth_pct:
+      label: BPS Growth Percentile
+      description: >
+        Cross-sectional percentile of 12-month BPS growth. Higher means
+        stronger historical book-value growth.
+    dps_growth_pct:
+      label: DPS Growth Percentile
+      description: >
+        Cross-sectional percentile of 12-month DPS growth. Higher means
+        stronger historical dividend-per-share growth.
+
+  momentum:
+    momentum_6m:
+      label: 6M Momentum
+      description: Price return over the prior 6 months.
+    momentum_12m:
+      label: 12M Momentum
+      description: Price return over the prior 12 months.
+    momentum_6m_pct:
+      label: 6M Momentum Percentile
+      description: >
+        Cross-sectional percentile of 6-month price return. Higher means
+        stronger momentum.
+    momentum_12m_pct:
+      label: 12M Momentum Percentile
+      description: >
+        Cross-sectional percentile of 12-month price return. Higher means
+        stronger momentum.
+
+  risk:
+    volatility_60d:
+      label: 60D Annualized Volatility
+      description: >
+        Annualized standard deviation of daily returns over the latest 60
+        trading observations.
+    max_drawdown_12m:
+      label: 12M Maximum Drawdown
+      description: Maximum peak-to-trough drawdown over the prior 12 months.
+    volatility_risk_pct:
+      label: Volatility Risk Percentile
+      description: >
+        Cross-sectional percentile of 60-day annualized volatility. Higher
+        means higher realized stock risk.
+    drawdown_risk_pct:
+      label: Drawdown Risk Percentile
+      description: >
+        Cross-sectional percentile of maximum-drawdown severity. Higher means
+        a more severe historical drawdown relative to other stocks.
