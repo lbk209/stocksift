@@ -1,0 +1,30 @@
+[project]
+name = "stocksift"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "lbk209",email = "leebaekku209@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy (>=1.26.4,<3)",
+    "pandas (>=2,<4)",
+    "plotly (>=5.22,<8)",
+    "python-dotenv (>=1.2.2,<2)",
+    "pyyaml (>=6,<7)"
+]
+
+[tool.poetry]
+packages = [{include = "stocksift", from = "src"}]
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[dependency-groups]
+dev = [
+    "jupyterlab (>=4.2.1,<5)",
+    "ipykernel (>=6.29.4,<7)",
+    "ipywidgets (>=8.1.3,<9)"
+]
