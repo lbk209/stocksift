@@ -973,96 +973,121 @@ class LongEqualGroupScore(LongGroupScore):
         )
 
 
-def _normalize_horizons(horizons: Iterable[int]) -> tuple[int, ...]:
+def _normalize_horizons(
+    horizons: Iterable[int],
+) -> tuple[int, ...]:
     """Validate and normalize forward-return horizons in calendar months."""
+
     normalized: list[int] = []
     seen: set[int] = set()
 
     for horizon in horizons:
-        if isinstance(horizon, bool) or not isinstance(horizon, int) or horizon <= 0:
-            raise ValueError("horizons must contain positive integer months")
+        if (
+            isinstance(horizon, bool)
+            or not isinstance(horizon, int)
+            or horizon <= 0
+        ):
+            raise ValueError(
+                "horizons must contain positive integer months"
+            )
+
         if horizon not in seen:
             normalized.append(horizon)
             seen.add(horizon)
 
     if not normalized:
-        raise ValueError("at least one forward-return horizon is required")
+        raise ValueError(
+            "at least one forward-return horizon is required"
+        )
 
     return tuple(normalized)
 
 
 def _normalize_ticker_label(value: object) -> str:
     """Normalize numeric ticker labels while leaving other symbols unchanged."""
+
     label = str(value)
     return label.zfill(6) if label.isdigit() else label
 
 
-def evaluate_selected_forward_returns(
-    selected: pd.DataFrame,
+def _calculate_forward_returns(
+    data: pd.DataFrame,
     prices: pd.DataFrame,
     *,
-    horizons: Iterable[int] = (1, 3, 6),
-    ticker_col: str = "ticker",
-    as_of_col: str = "as_of_date",
-    price_date_col: str = "date",
+    horizons: Iterable[int],
+    ticker_col: str,
+    as_of_col: str,
+    price_date_col: str,
 ) -> pd.DataFrame:
-    """Append forward returns to an already-produced selection result.
+    """Append forward returns to ticker-level data."""
 
-    The selection result must contain a single ``as_of_date`` shared by all
-    rows. Entry uses the first available price strictly after that date.
-    For each requested horizon, exit uses the first available price on or
-    after ``as_of_date + horizon months``.
+    if not isinstance(data, pd.DataFrame):
+        raise TypeError(
+            "data must be a pandas DataFrame"
+        )
 
-    If the price table contains no dates after ``as_of_date``, evaluation is
-    impossible and a ValueError is raised. If only some horizons are covered,
-    available horizons are calculated and unavailable ones remain NaN. A
-    ticker with no usable future price also remains in the result with NaN
-    evaluation fields.
-    """
-    if not isinstance(selected, pd.DataFrame):
-        raise TypeError("selected must be a pandas DataFrame")
     if not isinstance(prices, pd.DataFrame):
-        raise TypeError("prices must be a pandas DataFrame")
-    if selected.empty:
-        raise ValueError("selected contains no rows to evaluate")
+        raise TypeError(
+            "prices must be a pandas DataFrame"
+        )
 
-    missing_selected = {
+    if data.empty:
+        raise ValueError(
+            "data contains no rows to evaluate"
+        )
+
+    missing_data = {
         ticker_col,
         as_of_col,
-    }.difference(selected.columns)
-    if missing_selected:
+    }.difference(data.columns)
+
+    if missing_data:
         raise ValueError(
-            "selected is missing required columns: "
-            f"{sorted(missing_selected)}"
+            "data is missing required columns: "
+            f"{sorted(missing_data)}"
         )
+
     if price_date_col not in prices.columns:
         raise ValueError(
             f"prices must contain date column {price_date_col!r}"
         )
 
-    horizons = _normalize_horizons(horizons)
+    as_of_values = pd.to_datetime(
+        data[as_of_col],
+        errors="raise",
+    ).dt.normalize()
 
-    as_of_values = pd.to_datetime(selected[as_of_col], errors="raise").dt.normalize()
     if as_of_values.isna().any():
-        raise ValueError(f"selected contains missing {as_of_col!r} values")
+        raise ValueError(
+            f"data contains missing {as_of_col!r} values"
+        )
 
     unique_as_of = as_of_values.unique()
+
     if len(unique_as_of) != 1:
         raise ValueError(
-            f"selected must contain exactly one {as_of_col!r}; "
+            f"data must contain exactly one {as_of_col!r}; "
             f"found {len(unique_as_of)}"
         )
-    as_of = pd.Timestamp(unique_as_of[0])
+
+    as_of = pd.Timestamp(
+        unique_as_of[0]
+    )
 
     price_data = prices.copy()
+
     price_data[price_date_col] = pd.to_datetime(
         price_data[price_date_col],
         errors="raise",
     ).dt.normalize()
+
     price_data = (
         price_data
         .sort_values(price_date_col)
-        .drop_duplicates(price_date_col, keep="last")
+        .drop_duplicates(
+            price_date_col,
+            keep="last",
+        )
     )
 
     rename_map = {
@@ -1070,211 +1095,180 @@ def evaluate_selected_forward_returns(
         for column in price_data.columns
         if column != price_date_col
     }
-    price_data = price_data.rename(columns=rename_map)
+
+    price_data = price_data.rename(
+        columns=rename_map
+    )
 
     future_dates = price_data.loc[
         price_data[price_date_col] > as_of,
         price_date_col,
     ]
+
     if future_dates.empty:
         raise ValueError(
-            "price history contains no dates after selected as_of_date "
+            "price history contains no dates after as_of_date "
             f"{as_of.date().isoformat()}"
         )
 
-    result = selected.copy()
-    normalized_tickers = result[ticker_col].map(_normalize_ticker_label)
+    evaluated = data.copy()
 
-    result["entry_date"] = pd.NaT
-    result["entry_price"] = np.nan
+    normalized_tickers = evaluated[
+        ticker_col
+    ].map(
+        _normalize_ticker_label
+    )
+
+    evaluated["entry_date"] = pd.NaT
+    evaluated["entry_price"] = np.nan
 
     for horizon in horizons:
-        result[f"exit_date_{horizon}m"] = pd.NaT
-        result[f"return_{horizon}m"] = np.nan
+        evaluated[
+            f"exit_date_{horizon}m"
+        ] = pd.NaT
+
+        evaluated[
+            f"return_{horizon}m"
+        ] = np.nan
+
+    max_price_date = price_data[
+        price_date_col
+    ].max()
 
     for row_index, ticker in normalized_tickers.items():
         if ticker not in price_data.columns:
             continue
 
         ticker_prices = (
-            price_data[[price_date_col, ticker]]
-            .dropna(subset=[ticker])
+            price_data[
+                [
+                    price_date_col,
+                    ticker,
+                ]
+            ]
+            .dropna(
+                subset=[ticker]
+            )
             .copy()
         )
+
         ticker_prices[ticker] = pd.to_numeric(
             ticker_prices[ticker],
             errors="coerce",
         )
-        ticker_prices = ticker_prices.dropna(subset=[ticker])
+
+        ticker_prices = ticker_prices.dropna(
+            subset=[ticker]
+        )
 
         entry_rows = ticker_prices.loc[
             ticker_prices[price_date_col] > as_of
         ]
+
         if entry_rows.empty:
             continue
 
         entry_row = entry_rows.iloc[0]
-        entry_date = pd.Timestamp(entry_row[price_date_col])
-        entry_price = float(entry_row[ticker])
 
-        if not np.isfinite(entry_price) or entry_price <= 0:
+        entry_date = pd.Timestamp(
+            entry_row[price_date_col]
+        )
+
+        entry_price = float(
+            entry_row[ticker]
+        )
+
+        if (
+            not np.isfinite(entry_price)
+            or entry_price <= 0
+        ):
             continue
 
-        result.at[row_index, "entry_date"] = entry_date
-        result.at[row_index, "entry_price"] = entry_price
+        evaluated.at[
+            row_index,
+            "entry_date",
+        ] = entry_date
+
+        evaluated.at[
+            row_index,
+            "entry_price",
+        ] = entry_price
 
         for horizon in horizons:
-            target_date = as_of + pd.DateOffset(months=horizon)
+            target_date = (
+                as_of
+                + pd.DateOffset(
+                    months=horizon
+                )
+            )
 
-            # Do not substitute a shorter realized period for the requested
-            # horizon. If the data set itself does not reach the target date,
-            # that horizon remains unavailable.
-            if price_data[price_date_col].max() < target_date:
+            if max_price_date < target_date:
                 continue
 
             exit_rows = ticker_prices.loc[
-                ticker_prices[price_date_col] >= target_date
+                ticker_prices[price_date_col]
+                >= target_date
             ]
+
             if exit_rows.empty:
                 continue
 
             exit_row = exit_rows.iloc[0]
-            exit_date = pd.Timestamp(exit_row[price_date_col])
-            exit_price = float(exit_row[ticker])
 
-            if not np.isfinite(exit_price) or exit_price <= 0:
-                continue
-
-            result.at[row_index, f"exit_date_{horizon}m"] = exit_date
-            result.at[row_index, f"return_{horizon}m"] = (
-                exit_price / entry_price - 1.0
+            exit_date = pd.Timestamp(
+                exit_row[price_date_col]
             )
 
-    return result
+            exit_price = float(
+                exit_row[ticker]
+            )
 
-
-def plot_forward_returns(
-    evaluated: pd.DataFrame,
-    *,
-    horizons: Iterable[int] | None = None,
-    ticker_col: str = "ticker",
-    rank_col: str = "selection_rank",
-    ax: Any | None = None,
-) -> Any:
-    """Plot ticker-level forward returns across available horizons.
-
-    The legend uses ``#<rank> <ticker>`` when ``selection_rank`` is available;
-    otherwise it uses the ticker alone. Missing horizon returns are left as
-    gaps rather than replaced with shorter-period returns.
-    """
-    if not isinstance(evaluated, pd.DataFrame):
-        raise TypeError("evaluated must be a pandas DataFrame")
-    if ticker_col not in evaluated.columns:
-        raise ValueError(
-            f"evaluated must contain ticker column {ticker_col!r}"
-        )
-
-    if horizons is None:
-        inferred: list[int] = []
-        for column in evaluated.columns:
-            if column.startswith("return_") and column.endswith("m"):
-                token = column[len("return_") : -1]
-                if token.isdigit():
-                    inferred.append(int(token))
-        horizons = tuple(sorted(set(inferred)))
-    else:
-        horizons = _normalize_horizons(horizons)
-
-    if not horizons:
-        raise ValueError("evaluated contains no forward-return columns")
-
-    return_columns = [f"return_{horizon}m" for horizon in horizons]
-    missing_returns = [
-        column for column in return_columns if column not in evaluated.columns
-    ]
-    if missing_returns:
-        raise ValueError(
-            "evaluated is missing return columns: "
-            f"{missing_returns}"
-        )
-
-    if evaluated[return_columns].notna().sum().sum() == 0:
-        raise ValueError("evaluated contains no calculated forward returns")
-
-    import matplotlib.pyplot as plt
-    from matplotlib.ticker import PercentFormatter
-
-    if ax is None:
-        _, ax = plt.subplots()
-
-    x = np.arange(len(horizons))
-
-    for _, row in evaluated.iterrows():
-        ticker = str(row[ticker_col])
-        if rank_col in evaluated.columns and pd.notna(row[rank_col]):
-            rank_value = row[rank_col]
-            if isinstance(rank_value, (int, np.integer)) or (
-                isinstance(rank_value, float) and rank_value.is_integer()
+            if (
+                not np.isfinite(exit_price)
+                or exit_price <= 0
             ):
-                rank_value = int(rank_value)
-            label = f"#{rank_value} {ticker}"
-        else:
-            label = ticker
+                continue
 
-        y = [row[column] for column in return_columns]
-        ax.plot(x, y, marker="o", label=label)
+            evaluated.at[
+                row_index,
+                f"exit_date_{horizon}m",
+            ] = exit_date
 
-    ax.axhline(0.0, linewidth=0.8)
-    ax.set_xticks(x, [f"{horizon}M" for horizon in horizons])
-    ax.set_xlabel("Forward horizon")
-    ax.set_ylabel("Return")
-    ax.set_title("Forward Returns by Selected Stock")
-    ax.yaxis.set_major_formatter(PercentFormatter(1.0))
-    ax.legend(title="Selection rank")
+            evaluated.at[
+                row_index,
+                f"return_{horizon}m",
+            ] = (
+                exit_price / entry_price
+                - 1.0
+            )
 
-    return ax
+    return evaluated
 
 
-def compare_selection_to_universe(
+def _compare_to_universe(
+    universe_evaluated: pd.DataFrame,
     selected: pd.DataFrame,
-    universe: pd.DataFrame,
-    prices: pd.DataFrame,
     *,
-    horizons: Iterable[int] = (1, 3, 6),
-    quantiles: int = 5,
-    ticker_col: str = "ticker",
-    as_of_col: str = "as_of_date",
-    price_date_col: str = "date",
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Compare selected stocks' forward returns with their full universe.
+    horizons: Iterable[int],
+    quantiles: int,
+    ticker_col: str,
+    as_of_col: str,
+) -> tuple[
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+]:
+    """Evaluate selected stocks against an evaluated universe."""
 
-    Forward returns are calculated once for the full universe by reusing
-    :func:`evaluate_selected_forward_returns`. Universe return percentiles and
-    quantiles are then attached to the selected rows.
-
-    Returns
-    -------
-    details
-        The original selected rows plus entry/exit data, forward returns,
-        universe-relative return percentiles, and return quantiles.
-
-    distribution
-        Selected-stock counts and proportions in each universe return quantile
-        for every requested horizon. Q1 is the lowest-return quantile and QN
-        is the highest-return quantile.
-
-    summary
-        Horizon-level selected-vs-universe return statistics, excess returns,
-        top/bottom quantile hit rates, and mean selected return percentile.
-    """
     if not isinstance(selected, pd.DataFrame):
-        raise TypeError("selected must be a pandas DataFrame")
-    if not isinstance(universe, pd.DataFrame):
-        raise TypeError("universe must be a pandas DataFrame")
+        raise TypeError(
+            "selected must be a pandas DataFrame"
+        )
+
     if selected.empty:
-        raise ValueError("selected contains no rows to compare")
-    if universe.empty:
-        raise ValueError("universe contains no rows to compare")
+        raise ValueError(
+            "selected contains no rows to compare"
+        )
 
     if (
         isinstance(quantiles, bool)
@@ -1282,13 +1276,18 @@ def compare_selection_to_universe(
         or quantiles < 2
     ):
         raise ValueError(
-            "quantiles must be an integer greater than or equal to 2"
+            "quantiles must be an integer "
+            "greater than or equal to 2"
         )
 
-    required = {ticker_col, as_of_col}
+    required = {
+        ticker_col,
+        as_of_col,
+    }
 
-    missing_selected = required.difference(selected.columns)
-    missing_universe = required.difference(universe.columns)
+    missing_selected = required.difference(
+        selected.columns
+    )
 
     if missing_selected:
         raise ValueError(
@@ -1296,45 +1295,37 @@ def compare_selection_to_universe(
             f"{sorted(missing_selected)}"
         )
 
-    if missing_universe:
+    selected_as_of_values = pd.to_datetime(
+        selected[as_of_col],
+        errors="raise",
+    ).dt.normalize()
+
+    if selected_as_of_values.isna().any():
         raise ValueError(
-            "universe is missing required columns: "
-            f"{sorted(missing_universe)}"
+            f"selected contains missing {as_of_col!r} values"
         )
 
-    horizons = _normalize_horizons(horizons)
-
-    def single_as_of(
-        data: pd.DataFrame,
-        name: str,
-    ) -> pd.Timestamp:
-        values = pd.to_datetime(
-            data[as_of_col],
-            errors="raise",
-        ).dt.normalize()
-
-        if values.isna().any():
-            raise ValueError(
-                f"{name} contains missing {as_of_col!r} values"
-            )
-
-        unique = values.unique()
-
-        if len(unique) != 1:
-            raise ValueError(
-                f"{name} must contain exactly one {as_of_col!r}; "
-                f"found {len(unique)}"
-            )
-
-        return pd.Timestamp(unique[0])
-
-    selected_as_of = single_as_of(
-        selected,
-        "selected",
+    unique_selected_as_of = (
+        selected_as_of_values.unique()
     )
-    universe_as_of = single_as_of(
-        universe,
-        "universe",
+
+    if len(unique_selected_as_of) != 1:
+        raise ValueError(
+            f"selected must contain exactly one {as_of_col!r}; "
+            f"found {len(unique_selected_as_of)}"
+        )
+
+    selected_as_of = pd.Timestamp(
+        unique_selected_as_of[0]
+    )
+
+    universe_as_of = pd.Timestamp(
+        pd.to_datetime(
+            universe_evaluated[as_of_col],
+            errors="raise",
+        )
+        .dt.normalize()
+        .iloc[0]
     )
 
     if selected_as_of != universe_as_of:
@@ -1344,10 +1335,15 @@ def compare_selection_to_universe(
             f"universe={universe_as_of.date().isoformat()}"
         )
 
-    selected_keys = selected[ticker_col].map(
+    selected_keys = selected[
+        ticker_col
+    ].map(
         _normalize_ticker_label
     )
-    universe_keys = universe[ticker_col].map(
+
+    universe_keys = universe_evaluated[
+        ticker_col
+    ].map(
         _normalize_ticker_label
     )
 
@@ -1362,48 +1358,60 @@ def compare_selection_to_universe(
         )
 
     missing_tickers = sorted(
-        set(selected_keys).difference(universe_keys)
+        set(selected_keys).difference(
+            universe_keys
+        )
     )
 
     if missing_tickers:
-        suffix = " ..." if len(missing_tickers) > 10 else ""
+        suffix = (
+            " ..."
+            if len(missing_tickers) > 10
+            else ""
+        )
 
         raise ValueError(
             "selected contains tickers missing from universe: "
             f"{missing_tickers[:10]}{suffix}"
         )
 
-    # Calculate forward returns only once, for the full universe.
-    universe_evaluated = evaluate_selected_forward_returns(
-        universe,
-        prices,
-        horizons=horizons,
-        ticker_col=ticker_col,
-        as_of_col=as_of_col,
-        price_date_col=price_date_col,
-    ).copy()
-
-    universe_evaluated["__ticker_key__"] = (
-        universe_evaluated[ticker_col].map(
-            _normalize_ticker_label
-        )
+    universe_evaluated = (
+        universe_evaluated.copy()
     )
 
-    # Add universe-relative percentile and quantile information.
+    universe_evaluated[
+        "__ticker_key__"
+    ] = universe_keys
+
     for horizon in horizons:
-        return_col = f"return_{horizon}m"
-        percentile_col = f"return_{horizon}m_pct"
-        quantile_col = f"return_{horizon}m_quantile"
+        return_col = (
+            f"return_{horizon}m"
+        )
+
+        percentile_col = (
+            f"return_{horizon}m_pct"
+        )
+
+        quantile_col = (
+            f"return_{horizon}m_quantile"
+        )
 
         returns = pd.to_numeric(
-            universe_evaluated[return_col],
+            universe_evaluated[
+                return_col
+            ],
             errors="coerce",
         )
 
         valid = returns.notna()
 
-        universe_evaluated[percentile_col] = np.nan
-        universe_evaluated[quantile_col] = pd.Series(
+        universe_evaluated[
+            percentile_col
+        ] = np.nan
+
+        universe_evaluated[
+            quantile_col
+        ] = pd.Series(
             pd.NA,
             index=universe_evaluated.index,
             dtype="string",
@@ -1425,8 +1433,12 @@ def compare_selection_to_universe(
             ] = percentiles
 
             buckets = np.ceil(
-                percentiles * quantiles / 100.0
-            ).astype(int).clip(
+                percentiles
+                * quantiles
+                / 100.0
+            ).astype(
+                int
+            ).clip(
                 1,
                 quantiles,
             )
@@ -1434,16 +1446,20 @@ def compare_selection_to_universe(
             universe_evaluated.loc[
                 valid,
                 quantile_col,
-            ] = "Q" + buckets.astype(str)
+            ] = (
+                "Q"
+                + buckets.astype(str)
+            )
 
-    # Start details from the actual selection result so selection metadata and
-    # original feature columns are preserved.
     lookup = universe_evaluated.set_index(
         "__ticker_key__"
     )
 
     details = selected.copy()
-    detail_keys = details[ticker_col].map(
+
+    detail_keys = details[
+        ticker_col
+    ].map(
         _normalize_ticker_label
     )
 
@@ -1463,19 +1479,34 @@ def compare_selection_to_universe(
         )
 
     for column in evaluation_columns:
-        details[column] = detail_keys.map(
-            lookup[column]
+        details[column] = (
+            detail_keys.map(
+                lookup[column]
+            )
         )
 
-    distribution_rows: list[dict[str, object]] = []
-    summary_rows: list[dict[str, object]] = []
+    distribution_rows: list[
+        dict[str, object]
+    ] = []
+
+    summary_rows: list[
+        dict[str, object]
+    ] = []
 
     baseline = 1.0 / quantiles
 
     for horizon in horizons:
-        return_col = f"return_{horizon}m"
-        percentile_col = f"return_{horizon}m_pct"
-        quantile_col = f"return_{horizon}m_quantile"
+        return_col = (
+            f"return_{horizon}m"
+        )
+
+        percentile_col = (
+            f"return_{horizon}m_pct"
+        )
+
+        quantile_col = (
+            f"return_{horizon}m_quantile"
+        )
 
         selected_returns = pd.to_numeric(
             details[return_col],
@@ -1483,17 +1514,21 @@ def compare_selection_to_universe(
         ).dropna()
 
         universe_returns = pd.to_numeric(
-            universe_evaluated[return_col],
+            universe_evaluated[
+                return_col
+            ],
             errors="coerce",
         ).dropna()
 
-        valid_selected = details[quantile_col].notna()
+        valid_selected = (
+            details[quantile_col]
+            .notna()
+        )
+
         valid_selected_count = int(
             valid_selected.sum()
         )
 
-        # Distribution is derived from details rather than recalculating
-        # quantiles independently.
         for quantile in range(
             1,
             quantiles + 1,
@@ -1516,7 +1551,8 @@ def compare_selection_to_universe(
                     "quantile": label,
                     "selected_count": count,
                     "selected_proportion": (
-                        count / valid_selected_count
+                        count
+                        / valid_selected_count
                         if valid_selected_count > 0
                         else np.nan
                     ),
@@ -1525,11 +1561,16 @@ def compare_selection_to_universe(
             )
 
         selected_percentiles = pd.to_numeric(
-            details[percentile_col],
+            details[
+                percentile_col
+            ],
             errors="coerce",
         ).dropna()
 
-        top_label = f"Q{quantiles}"
+        top_label = (
+            f"Q{quantiles}"
+        )
+
         bottom_label = "Q1"
 
         top_count = int(
@@ -1588,20 +1629,24 @@ def compare_selection_to_universe(
                 "selected_mean_return": selected_mean,
                 "universe_mean_return": universe_mean,
                 "mean_excess_return": (
-                    selected_mean - universe_mean
+                    selected_mean
+                    - universe_mean
                 ),
                 "selected_median_return": selected_median,
                 "universe_median_return": universe_median,
                 "median_excess_return": (
-                    selected_median - universe_median
+                    selected_median
+                    - universe_median
                 ),
                 "top_quantile_hit_rate": (
-                    top_count / valid_selected_count
+                    top_count
+                    / valid_selected_count
                     if valid_selected_count > 0
                     else np.nan
                 ),
                 "bottom_quantile_hit_rate": (
-                    bottom_count / valid_selected_count
+                    bottom_count
+                    / valid_selected_count
                     if valid_selected_count > 0
                     else np.nan
                 ),
@@ -1622,48 +1667,206 @@ def compare_selection_to_universe(
         summary_rows
     )
 
-    return details, distribution, summary
+    return (
+        details,
+        distribution,
+        summary,
+    )
 
 
-def plot_forward_return_distribution(
-    distribution,
-):
-    """Plot selected-stock distribution across universe return quantiles."""
+def _plot_forward_returns(
+    evaluated: pd.DataFrame,
+    *,
+    horizons: Iterable[int],
+    ticker_col: str,
+    rank_col: str,
+    ax: Any,
+) -> Any:
+    """Plot ticker-level forward returns on an existing axes."""
+
+    from matplotlib.ticker import PercentFormatter
+
+    return_columns = [
+        f"return_{horizon}m"
+        for horizon in horizons
+    ]
+
+    if (
+        evaluated[
+            return_columns
+        ]
+        .notna()
+        .sum()
+        .sum()
+        == 0
+    ):
+        raise ValueError(
+            "evaluated contains no calculated forward returns"
+        )
+
+    x = np.arange(
+        len(horizons)
+    )
+
+    for _, row in evaluated.iterrows():
+        ticker = str(
+            row[ticker_col]
+        )
+
+        if (
+            rank_col in evaluated.columns
+            and pd.notna(
+                row[rank_col]
+            )
+        ):
+            rank_value = row[
+                rank_col
+            ]
+
+            if (
+                isinstance(
+                    rank_value,
+                    (int, np.integer),
+                )
+                or (
+                    isinstance(
+                        rank_value,
+                        float,
+                    )
+                    and rank_value.is_integer()
+                )
+            ):
+                rank_value = int(
+                    rank_value
+                )
+
+            label = (
+                f"#{rank_value} {ticker}"
+            )
+
+        else:
+            label = ticker
+
+        y = [
+            row[column]
+            for column in return_columns
+        ]
+
+        ax.plot(
+            x,
+            y,
+            marker="o",
+            label=label,
+        )
+
+    ax.axhline(
+        0.0,
+        linewidth=0.8,
+    )
+
+    ax.set_xticks(
+        x,
+        [
+            f"{horizon}M"
+            for horizon in horizons
+        ],
+    )
+
+    ax.set_xlabel(
+        "Forward horizon"
+    )
+
+    ax.set_ylabel(
+        "Return"
+    )
+
+    ax.set_title(
+        "Forward Returns by Selected Stock"
+    )
+
+    ax.yaxis.set_major_formatter(
+        PercentFormatter(1.0)
+    )
+
+    ax.legend(
+        title="Selection rank"
+    )
+
+    return ax
+
+
+def _plot_forward_return_distribution(
+    distribution: pd.DataFrame,
+    *,
+    ax: Any,
+) -> Any:
+    """Plot selected-stock return quantiles on an existing axes."""
 
     data = distribution.copy()
 
-    horizons = data["horizon"].drop_duplicates().tolist()
-
-    quantiles = sorted(
-        data["quantile"].unique(),
-        key=lambda value: int(value.removeprefix("Q")),
+    horizons = (
+        data["horizon"]
+        .drop_duplicates()
+        .tolist()
     )
 
-    x = np.arange(len(quantiles))
-    width = 0.8 / len(horizons)
+    quantiles = sorted(
+        data[
+            "quantile"
+        ].unique(),
+        key=lambda value: int(
+            value.removeprefix("Q")
+        ),
+    )
 
-    fig, ax = plt.subplots(figsize=(9, 5))
+    x = np.arange(
+        len(quantiles)
+    )
 
-    for i, horizon in enumerate(horizons):
+    width = (
+        0.8
+        / len(horizons)
+    )
+
+    for i, horizon in enumerate(
+        horizons
+    ):
         subset = (
-            data.loc[data["horizon"] == horizon]
-            .set_index("quantile")
-            .reindex(quantiles)
+            data.loc[
+                data["horizon"]
+                == horizon
+            ]
+            .set_index(
+                "quantile"
+            )
+            .reindex(
+                quantiles
+            )
         )
 
         offset = (
-            i - (len(horizons) - 1) / 2
+            i
+            - (
+                len(horizons)
+                - 1
+            )
+            / 2
         ) * width
 
         ax.bar(
             x + offset,
-            subset["selected_proportion"] * 100,
+            subset[
+                "selected_proportion"
+            ]
+            * 100,
             width=width,
             label=horizon,
         )
 
     baseline = (
-        data["baseline_proportion"]
+        data[
+            "baseline_proportion"
+        ]
         .dropna()
         .iloc[0]
         * 100
@@ -1673,20 +1876,232 @@ def plot_forward_return_distribution(
         baseline,
         linestyle="--",
         linewidth=1,
-        label=f"Universe baseline ({baseline:.0f}%)",
+        label=(
+            "Universe baseline "
+            f"({baseline:.0f}%)"
+        ),
     )
 
-    ax.set_xticks(x)
-    ax.set_xticklabels(quantiles)
+    ax.set_xticks(
+        x
+    )
 
-    ax.set_xlabel("Universe forward-return quantile")
-    ax.set_ylabel("Selected stocks (%)")
+    ax.set_xticklabels(
+        quantiles
+    )
+
+    ax.set_xlabel(
+        "Universe forward-return quantile"
+    )
+
+    ax.set_ylabel(
+        "Selected stocks (%)"
+    )
 
     ax.set_title(
         "Selected Stocks by Forward-Return Quantile"
     )
 
     ax.legend()
-    fig.tight_layout()
 
-    return fig, ax
+    return ax
+
+
+def evaluate_selection(
+    selected: pd.DataFrame,
+    prices: pd.DataFrame,
+    *,
+    universe: pd.DataFrame | None = None,
+    horizons: Iterable[int] = (1, 3, 6),
+    quantiles: int = 5,
+    result: str = "detail",
+    plot: str | bool = False,
+    ticker_col: str = "ticker",
+    as_of_col: str = "as_of_date",
+    price_date_col: str = "date",
+    rank_col: str = "selection_rank",
+) -> Any:
+    """Evaluate a selection with optional universe comparison and plotting.
+
+    Parameters
+    ----------
+    result
+        Used when ``plot=False``:
+        - ``"detail"``: ticker-level forward-return details.
+        - ``"distribution"``: selected stocks by universe return quantile.
+        - ``"summary"``: selected-vs-universe summary statistics.
+        - ``"all"``: details, distribution, and summary.
+
+        ``"distribution"``, ``"summary"``, and ``"all"`` require
+        ``universe``. If ``universe`` is supplied with ``result="detail"``,
+        universe-relative percentile and quantile columns are also included.
+
+    plot
+        - ``False``: return the requested calculation result.
+        - ``"returns"``: return one forward-return figure.
+        - ``"distribution"``: return one quantile-distribution figure.
+        - ``"both"``: return one figure containing both plots as subplots.
+
+        Plot modes return figure objects rather than calculation results.
+        ``"distribution"`` and ``"both"`` require ``universe``.
+    """
+
+    valid_results = {
+        "detail",
+        "distribution",
+        "summary",
+        "all",
+    }
+
+    if result not in valid_results:
+        raise ValueError(
+            "result must be one of "
+            f"{sorted(valid_results)}"
+        )
+
+    valid_plots = {
+        "returns",
+        "distribution",
+        "both",
+    }
+
+    if (
+        plot is not False
+        and plot not in valid_plots
+    ):
+        raise ValueError(
+            "plot must be False, "
+            "'returns', 'distribution', or 'both'"
+        )
+
+    horizons = _normalize_horizons(
+        horizons
+    )
+
+    need_universe = (
+        plot in {
+            "distribution",
+            "both",
+        }
+        or (
+            plot is False
+            and (
+                universe is not None
+                or result != "detail"
+            )
+        )
+    )
+
+    # Selected-only path.
+    if not need_universe:
+        evaluated = _calculate_forward_returns(
+            selected,
+            prices,
+            horizons=horizons,
+            ticker_col=ticker_col,
+            as_of_col=as_of_col,
+            price_date_col=price_date_col,
+        )
+
+        if plot == "returns":
+            fig, ax = plt.subplots(
+                figsize=(9, 5)
+            )
+
+            _plot_forward_returns(
+                evaluated,
+                horizons=horizons,
+                ticker_col=ticker_col,
+                rank_col=rank_col,
+                ax=ax,
+            )
+
+            fig.tight_layout()
+
+            return fig, ax
+
+        return evaluated
+
+    # Universe-relative path.
+    if universe is None:
+        raise ValueError(
+            "universe is required for "
+            "universe-relative evaluation"
+        )
+
+    universe_evaluated = (
+        _calculate_forward_returns(
+            universe,
+            prices,
+            horizons=horizons,
+            ticker_col=ticker_col,
+            as_of_col=as_of_col,
+            price_date_col=price_date_col,
+        )
+    )
+
+    (
+        details,
+        distribution,
+        summary,
+    ) = _compare_to_universe(
+        universe_evaluated,
+        selected,
+        horizons=horizons,
+        quantiles=quantiles,
+        ticker_col=ticker_col,
+        as_of_col=as_of_col,
+    )
+
+    if plot == "distribution":
+        fig, ax = plt.subplots(
+            figsize=(9, 5)
+        )
+
+        _plot_forward_return_distribution(
+            distribution,
+            ax=ax,
+        )
+
+        fig.tight_layout()
+
+        return fig, ax
+
+    if plot == "both":
+        fig, axes = plt.subplots(
+            1,
+            2,
+            figsize=(16, 5),
+        )
+
+        _plot_forward_returns(
+            details,
+            horizons=horizons,
+            ticker_col=ticker_col,
+            rank_col=rank_col,
+            ax=axes[0],
+        )
+
+        _plot_forward_return_distribution(
+            distribution,
+            ax=axes[1],
+        )
+
+        fig.tight_layout()
+
+        return fig, axes
+
+    if result == "detail":
+        return details
+
+    if result == "distribution":
+        return distribution
+
+    if result == "summary":
+        return summary
+
+    return (
+        details,
+        distribution,
+        summary,
+    )
