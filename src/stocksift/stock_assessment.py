@@ -28,8 +28,6 @@ RATIO_CORE_FACTOR_KEYS = (
     "eps",
 )
 
-# Candidates for optional input handling in a later stage.
-# Stage 1 still requires them to preserve existing behavior.
 RATIO_OPTIONAL_FACTOR_KEYS = (
     "div",
     "dps",
@@ -40,9 +38,16 @@ RATIO_FACTOR_KEYS = (
     + RATIO_OPTIONAL_FACTOR_KEYS
 )
 
-RATIO_REQUIRED_KEYS = (
+# All factor mappings supported by the YAML catalog.
+RATIO_CATALOG_KEYS = (
     RATIO_STRUCTURAL_KEYS
     + RATIO_FACTOR_KEYS
+)
+
+# Columns that must actually exist in ratio input data.
+RATIO_REQUIRED_KEYS = (
+    RATIO_STRUCTURAL_KEYS
+    + RATIO_CORE_FACTOR_KEYS
 )
 
 
@@ -144,7 +149,7 @@ class StockAssessment:
         )
 
         missing_ratio = set(
-            RATIO_REQUIRED_KEYS
+            RATIO_CATALOG_KEYS
         ).difference(
             self.ratio_cols
         )
@@ -368,11 +373,13 @@ class StockAssessment:
             for ticker in common_tickers
         ]
 
-        # Keep the point-in-time ratio/fundamental snapshots visible in the
-        # output under their configured input column names.
+        # Keep available point-in-time ratio/fundamental snapshots visible
+        # under their configured input column names.
         for semantic_key in RATIO_FACTOR_KEYS:
             column = rc[semantic_key]
-            out[column] = current[column]
+
+            if column in current.columns:
+                out[column] = current[column]
 
         # ---- Valuation ---------------------------------------------------
         history_start = (
@@ -439,12 +446,8 @@ class StockAssessment:
                 )
             )
 
-            per_smoothed[ticker] = (
-                current_per
-            )
-            pbr_smoothed[ticker] = (
-                current_pbr
-            )
+            per_smoothed[ticker] = current_per
+            pbr_smoothed[ticker] = current_pbr
 
             per_hist_pct[ticker] = (
                 self._own_history_percentile(
@@ -531,7 +534,6 @@ class StockAssessment:
         # ---- Fundamentals ------------------------------------------------
         eps_col = rc["eps"]
         bps_col = rc["bps"]
-        dps_col = rc["dps"]
 
         out[
             f["eps_growth_12m"]
@@ -545,13 +547,6 @@ class StockAssessment:
         ] = self._safe_growth(
             out[bps_col],
             previous[bps_col],
-        )
-
-        out[
-            f["dps_growth_12m"]
-        ] = self._safe_growth(
-            out[dps_col],
-            previous[dps_col],
         )
 
         out[
@@ -570,13 +565,23 @@ class StockAssessment:
             ]
         )
 
-        out[
-            f["dps_growth_pct"]
-        ] = self._pct_rank(
+        dps_col = rc["dps"]
+
+        if dps_col in r.columns:
             out[
                 f["dps_growth_12m"]
-            ]
-        )
+            ] = self._safe_growth(
+                out[dps_col],
+                previous[dps_col],
+            )
+
+            out[
+                f["dps_growth_pct"]
+            ] = self._pct_rank(
+                out[
+                    f["dps_growth_12m"]
+                ]
+            )
 
         # ---- Momentum ----------------------------------------------------
         short_date = (
