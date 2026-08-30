@@ -1,8 +1,8 @@
 """Reusable long-selection recipes and lightweight orchestration.
 
 This module stores concrete combinations of selection policies. It also
-re-exports selected-result evaluation and plotting utilities so routine use
-can rely on ``stock_assessment`` plus this module only.
+re-exports the selection evaluation utility so routine use can rely on
+``stock_assessment`` plus this module only.
 """
 
 from __future__ import annotations
@@ -11,56 +11,24 @@ from typing import Iterable, Sequence
 
 import pandas as pd
 
-from .selection_policy_long import (
+from .policy import (
     LongEqualGroupScore,
     LongThresholdFilter,
     SelectionPolicy,
-    evaluate_selected_forward_returns,
-    plot_forward_returns,
-    compare_selection_to_universe,
-    plot_forward_return_distribution,
+    evaluate_selection,
 )
-
-
-# Loose eligibility guardrails remove clearly unattractive tails before the
-# equal-group score ranks valuation, fundamentals, and momentum. They are
-# intentionally simple rather than optimized to historical results.
-CORE_LONG_THRESHOLD_RULES = (
-    ("per_hist_pct", "<=", 80.0),
-    ("eps_growth_pct", ">=", 20.0),
-    ("momentum_12m_pct", ">=", 20.0),
-)
-
-CORE_LONG_TOP_N = 20
-
-
-__all__ = [
-    "CORE_LONG_THRESHOLD_RULES",
-    "CORE_LONG_TOP_N",
-    "core_long_selection",
-    "apply_selection",
-    "evaluate_recipe",
-    "evaluate_selected_forward_returns",
-    "plot_forward_returns",
-    "compare_selection_to_universe",
-    "plot_forward_return_distribution",
-]
 
 
 def core_long_selection() -> list[SelectionPolicy]:
     """Return the default reusable long-selection recipe.
 
     Step 1 applies loose threshold eligibility rules.
-    Step 2 ranks the remaining universe with the default equal-group score
-    and keeps the top ``CORE_LONG_TOP_N`` tickers.
+    Step 2 ranks the remaining universe with the default equal-group score & top_n
     """
+
     return [
-        LongThresholdFilter(
-            rules=CORE_LONG_THRESHOLD_RULES,
-        ),
-        LongEqualGroupScore(
-            top_n=CORE_LONG_TOP_N,
-        ),
+        LongThresholdFilter(),
+        LongEqualGroupScore(),
     ]
 
 
@@ -69,25 +37,35 @@ def apply_selection(
     policies: Sequence[SelectionPolicy] | None = None,
     *,
     tickers: Iterable[str] | None = None,
+    show_count: bool = True,
 ) -> pd.DataFrame:
-    """Apply selection policies sequentially to one canonical feature table.
+    """Apply selection policies sequentially to one canonical feature table."""
 
-    Each step receives the original ``features`` DataFrame and only the ticker
-    universe surviving the prior step. Feature values and percentiles are
-    therefore never recalculated between selection steps.
-    """
     if policies is None:
         policies = core_long_selection()
     else:
         policies = list(policies)
 
     if not policies:
-        raise ValueError("at least one selection policy is required")
+        raise ValueError(
+            "at least one selection policy is required"
+        )
 
     current_tickers = tickers
     result: pd.DataFrame | None = None
 
-    for step, policy in enumerate(policies, start=1):
+    initial_count = (
+        len(features)
+        if tickers is None
+        else len(list(dict.fromkeys(tickers)))
+    )
+
+    counts = [initial_count]
+
+    for step, policy in enumerate(
+        policies,
+        start=1,
+    ):
         result = policy.select(
             features,
             tickers=current_tickers,
@@ -96,12 +74,24 @@ def apply_selection(
         if result.empty:
             raise ValueError(
                 "selection recipe produced no candidates "
-                f"after step {step} ({policy.__class__.__name__})"
+                f"after step {step} "
+                f"({policy.__class__.__name__})"
             )
 
-        current_tickers = result[policy.ticker_col].tolist()
+        counts.append(len(result))
+
+        current_tickers = result[
+            policy.ticker_col
+        ].tolist()
 
     assert result is not None
+
+    if show_count:
+        print(
+            "Selected: "
+            + " -> ".join(map(str, counts))
+        )
+
     return result
 
 
@@ -122,6 +112,7 @@ def evaluate_recipe(
     returns are then calculated only from prices after the resulting
     ``as_of_date``.
     """
+
     features = assessment.assess(
         prices,
         ratios,
@@ -135,16 +126,28 @@ def evaluate_recipe(
     )
 
     try:
-        price_date_col = assessment.price_cols["date"]
-    except (AttributeError, KeyError, TypeError) as exc:
+        price_date_col = (
+            assessment.price_cols[
+                "date"
+            ]
+        )
+    except (
+        AttributeError,
+        KeyError,
+        TypeError,
+    ) as exc:
         raise ValueError(
-            "assessment must expose price_cols['date'] for recipe evaluation"
+            "assessment must expose "
+            "price_cols['date'] "
+            "for recipe evaluation"
         ) from exc
 
-    return evaluate_selected_forward_returns(
+    return evaluate_selection(
         selected,
         prices,
         horizons=horizons,
+        result="detail",
+        plot=False,
         ticker_col="ticker",
         as_of_col="as_of_date",
         price_date_col=price_date_col,
