@@ -23,6 +23,19 @@ import matplotlib.pyplot as plt
 ThresholdRule = tuple[str, str, float]
 
 
+CORE_LONG_TOP_N = 10
+
+
+# Loose eligibility guardrails remove clearly unattractive tails before the
+# equal-group score ranks valuation, fundamentals, and momentum. They are
+# intentionally simple rather than optimized to historical results.
+CORE_LONG_THRESHOLD_RULES = (
+    ("per_hist_pct", "<=", 80.0),
+    ("eps_growth_pct", ">=", 20.0),
+    ("momentum_12m_pct", ">=", 20.0),
+)
+
+
 # Default normalized features used by the equal-feature long score.
 #
 # Feature choice belongs to the selection policy and is independent of
@@ -32,15 +45,15 @@ ThresholdRule = tuple[str, str, float]
 # They remain available in the feature DataFrame for separate review.
 DEFAULT_LONG_SCORE_FEATURES = {
     # Valuation: lower is more attractive.
-    "per_hist_pct": "lower",
-    "pbr_hist_pct": "lower",
+    #"per_hist_pct": "lower",
+    #"pbr_hist_pct": "lower",
     "per_expansion_pct": "lower",
     "pbr_expansion_pct": "lower",
 
     # Fundamentals: higher growth is more attractive.
     "eps_growth_pct": "higher",
     "bps_growth_pct": "higher",
-    "dps_growth_pct": "higher",
+    #"dps_growth_pct": "higher",
 
     # Momentum: higher relative momentum is more attractive.
     "momentum_6m_pct": "higher",
@@ -59,7 +72,7 @@ DEFAULT_LONG_SCORE_GROUPS = {
     "fundamentals": {
         "eps_growth_pct": "higher",
         "bps_growth_pct": "higher",
-        "dps_growth_pct": "higher",
+        #"dps_growth_pct": "higher",
     },
     "momentum": {
         "momentum_6m_pct": "higher",
@@ -185,10 +198,13 @@ class LongThresholdFilter(SelectionPolicy):
 
     def __init__(
         self,
-        rules: Sequence[ThresholdRule],
+        rules: Sequence[ThresholdRule] | None = None,
         *,
         ticker_col: str = "ticker",
     ) -> None:
+        if rules is None:
+            rules = CORE_LONG_THRESHOLD_RULES
+            
         super().__init__(ticker_col=ticker_col)
         self.rules = self._normalize_rules(rules)
 
