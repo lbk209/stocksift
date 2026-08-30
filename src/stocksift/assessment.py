@@ -3,7 +3,7 @@
 The module performs feature engineering only. It intentionally avoids feature
 aggregation, ranking into a final stock score, and buy/sell/trim decisions.
 
-Column mappings and generated-feature metadata live in ``stock_assessment.yaml``.
+Column mappings and generated-feature metadata live in ``assessment.yaml``.
 Calculation rules remain in Python.
 """
 
@@ -15,6 +15,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 import yaml
+
+ASSESSMENT_CONFIG_FILE = "assessment.yaml"
 
 
 PRICE_STRUCTURAL_KEYS = ("date",)
@@ -94,7 +96,7 @@ class StockAssessment:
 
     @staticmethod
     def _load_config() -> dict:
-        path = Path(__file__).with_name("stock_assessment.yaml")
+        path = Path(__file__).with_name(ASSESSMENT_CONFIG_FILE)
 
         with path.open("r", encoding="utf-8") as file:
             config = yaml.safe_load(file)
