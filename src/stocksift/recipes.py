@@ -19,30 +19,16 @@ from .policy import (
 )
 
 
-
-__all__ = [
-    "CORE_LONG_THRESHOLD_RULES",
-    "CORE_LONG_TOP_N",
-    "core_long_selection",
-    "apply_selection",
-    "evaluate_recipe",
-    "evaluate_selection",
-]
-
-
 def core_long_selection() -> list[SelectionPolicy]:
     """Return the default reusable long-selection recipe.
 
     Step 1 applies loose threshold eligibility rules.
-    Step 2 ranks the remaining universe with the default equal-group score
-    and keeps the top ``CORE_LONG_TOP_N`` tickers.
+    Step 2 ranks the remaining universe with the default equal-group score & top_n
     """
 
     return [
         LongThresholdFilter(),
-        LongEqualGroupScore(
-            top_n=CORE_LONG_TOP_N,
-        ),
+        LongEqualGroupScore(),
     ]
 
 

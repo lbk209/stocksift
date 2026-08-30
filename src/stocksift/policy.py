@@ -348,7 +348,7 @@ class _ScoreSelection(SelectionPolicy, ABC):
     def __init__(
         self,
         *,
-        top_n: int | None = CORE_LONG_TOP_N,
+        top_n: int | None,
         score_col: str = "selection_score",
         rank_col: str = "selection_rank",
         ticker_col: str = "ticker",
