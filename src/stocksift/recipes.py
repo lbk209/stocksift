@@ -11,7 +11,7 @@ from typing import Iterable, Sequence
 
 import pandas as pd
 
-from .selection_policy_long import (
+from .policy import (
     LongEqualGroupScore,
     LongThresholdFilter,
     SelectionPolicy,
@@ -19,43 +19,16 @@ from .selection_policy_long import (
 )
 
 
-# Loose eligibility guardrails remove clearly unattractive tails before the
-# equal-group score ranks valuation, fundamentals, and momentum. They are
-# intentionally simple rather than optimized to historical results.
-CORE_LONG_THRESHOLD_RULES = (
-    ("per_hist_pct", "<=", 80.0),
-    ("eps_growth_pct", ">=", 20.0),
-    ("momentum_12m_pct", ">=", 20.0),
-)
-
-CORE_LONG_TOP_N = 20
-
-
-__all__ = [
-    "CORE_LONG_THRESHOLD_RULES",
-    "CORE_LONG_TOP_N",
-    "core_long_selection",
-    "apply_selection",
-    "evaluate_recipe",
-    "evaluate_selection",
-]
-
-
 def core_long_selection() -> list[SelectionPolicy]:
     """Return the default reusable long-selection recipe.
 
     Step 1 applies loose threshold eligibility rules.
-    Step 2 ranks the remaining universe with the default equal-group score
-    and keeps the top ``CORE_LONG_TOP_N`` tickers.
+    Step 2 ranks the remaining universe with the default equal-group score & top_n
     """
 
     return [
-        LongThresholdFilter(
-            rules=CORE_LONG_THRESHOLD_RULES,
-        ),
-        LongEqualGroupScore(
-            top_n=CORE_LONG_TOP_N,
-        ),
+        LongThresholdFilter(),
+        LongEqualGroupScore(),
     ]
 
 
