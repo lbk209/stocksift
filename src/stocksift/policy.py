@@ -199,13 +199,12 @@ class LongThresholdFilter(SelectionPolicy):
     def __init__(
         self,
         rules: Sequence[ThresholdRule] | None = None,
-        *,
-        ticker_col: str = "ticker",
+        **kwargs: Any,
     ) -> None:
         if rules is None:
             rules = CORE_LONG_THRESHOLD_RULES
-            
-        super().__init__(ticker_col=ticker_col)
+
+        super().__init__(**kwargs)
         self.rules = self._normalize_rules(rules)
 
     def select(
@@ -349,7 +348,7 @@ class _ScoreSelection(SelectionPolicy, ABC):
     def __init__(
         self,
         *,
-        top_n: int | None = None,
+        top_n: int | None = CORE_LONG_TOP_N,
         score_col: str = "selection_score",
         rank_col: str = "selection_rank",
         ticker_col: str = "ticker",
@@ -375,20 +374,20 @@ class _ScoreSelection(SelectionPolicy, ABC):
         tickers: Iterable[str] | None = None,
     ) -> pd.DataFrame:
         """Calculate long scores and rank the selected ticker universe."""
-    
+
         required = self._required_features()
-    
+
         data = self._prepare_input(
             features,
             tickers=tickers,
             required_columns=required,
         )
-    
+
         self._validate_score_features(
             data,
             required,
         )
-    
+
         # Diagnose required scoring features that contain no usable values
         # anywhere in the current ticker universe.
         all_missing = [
@@ -399,65 +398,65 @@ class _ScoreSelection(SelectionPolicy, ABC):
                 errors="coerce",
             ).notna().sum() == 0
         ]
-    
+
         if all_missing:
             raise ValueError(
                 "selection cannot be scored because required features "
                 f"contain no usable values: {all_missing}"
             )
-    
+
         score, extra_columns = self._calculate_score(data)
-    
+
         output_names = [
             self.score_col,
             self.rank_col,
             *extra_columns,
         ]
-    
+
         collisions = sorted(
             set(output_names).intersection(data.columns)
         )
-    
+
         if collisions:
             raise ValueError(
                 "features already contains selection output columns: "
                 f"{collisions}. "
                 "Use the intended feature table as input."
             )
-    
+
         result = data.copy()
-    
+
         for name, values in extra_columns.items():
             result[name] = values
-    
+
         result[self.score_col] = score
-    
+
         # All configured scoring inputs must be available for a ticker.
         # Missing inputs are not handled by dynamic weight redistribution.
         valid_score = result[self.score_col].notna()
-    
+
         if not valid_score.any():
             raise ValueError(
                 "selection cannot be scored because no ticker has "
                 "a complete set of required scoring features"
             )
-    
+
         result = result.loc[valid_score].copy()
-    
+
         result = result.sort_values(
             [self.score_col, self.ticker_col],
             ascending=[False, True],
             kind="stable",
         )
-    
+
         result[self.rank_col] = np.arange(
             1,
             len(result) + 1,
         )
-    
+
         if self.top_n is not None:
             result = result.head(self.top_n)
-    
+
         return result.reset_index(drop=True)
 
     @abstractmethod
@@ -655,16 +654,12 @@ class LongFeatureScore(_ScoreSelection):
         self,
         rules: Mapping[str, Mapping[str, object]],
         *,
-        top_n: int | None = None,
-        score_col: str = "selection_score",
-        rank_col: str = "selection_rank",
-        ticker_col: str = "ticker",
+        top_n: int | None = CORE_LONG_TOP_N,
+        **kwargs: Any,
     ) -> None:
         super().__init__(
             top_n=top_n,
-            score_col=score_col,
-            rank_col=rank_col,
-            ticker_col=ticker_col,
+            **kwargs,
         )
 
         self.rules = self._normalize_feature_rules(
@@ -712,10 +707,8 @@ class LongEqualFeatureScore(LongFeatureScore):
         self,
         rules: Mapping[str, str] | None = None,
         *,
-        top_n: int | None = None,
-        score_col: str = "selection_score",
-        rank_col: str = "selection_rank",
-        ticker_col: str = "ticker",
+        top_n: int | None = CORE_LONG_TOP_N,
+        **kwargs: Any,
     ) -> None:
         if rules is None:
             rules = DEFAULT_LONG_SCORE_FEATURES
@@ -733,9 +726,7 @@ class LongEqualFeatureScore(LongFeatureScore):
         super().__init__(
             equal_rules,
             top_n=top_n,
-            score_col=score_col,
-            rank_col=rank_col,
-            ticker_col=ticker_col,
+            **kwargs,
         )
 
 
@@ -789,16 +780,12 @@ class LongGroupScore(_ScoreSelection):
         ],
         *,
         group_weights: Mapping[str, float] | None = None,
-        top_n: int | None = None,
-        score_col: str = "selection_score",
-        rank_col: str = "selection_rank",
-        ticker_col: str = "ticker",
+        top_n: int | None = CORE_LONG_TOP_N,
+        **kwargs: Any,
     ) -> None:
         super().__init__(
             top_n=top_n,
-            score_col=score_col,
-            rank_col=rank_col,
-            ticker_col=ticker_col,
+            **kwargs,
         )
 
         if not rules:
@@ -951,10 +938,8 @@ class LongEqualGroupScore(LongGroupScore):
             Mapping[str, str],
         ] | None = None,
         *,
-        top_n: int | None = None,
-        score_col: str = "selection_score",
-        rank_col: str = "selection_rank",
-        ticker_col: str = "ticker",
+        top_n: int | None = CORE_LONG_TOP_N,
+        **kwargs: Any,
     ) -> None:
         if rules is None:
             rules = DEFAULT_LONG_SCORE_GROUPS
@@ -983,9 +968,7 @@ class LongEqualGroupScore(LongGroupScore):
             equal_rules,
             group_weights=equal_group_weights,
             top_n=top_n,
-            score_col=score_col,
-            rank_col=rank_col,
-            ticker_col=ticker_col,
+            **kwargs,
         )
 
 
