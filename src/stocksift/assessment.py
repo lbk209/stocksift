@@ -56,9 +56,9 @@ RATIO_REQUIRED_KEYS = (
 class StockAssessment:
     """Create neutral stock-level assessment features.
 
-    The instance stores only the YAML-backed column/feature catalog. Input
-    DataFrames and results are passed through :meth:`assess` and are not kept
-    as object state.
+    The instance stores the YAML-backed column/feature catalog together with
+    loaded price and ratio inputs. Results are generated on demand and are not
+    kept as object state.
     """
 
     # Calculation rules intentionally remain in Python rather than YAML.
@@ -72,12 +72,13 @@ class StockAssessment:
 
     def __init__(
         self,
+        *,
+        price_csv: str | Path | None = None,
+        ratio_csv: str | Path | None = None,
+        ticker_name_csv: str | Path | None = None,
         data_root: str | Path | None = None,
     ) -> None:
         self.config = self._load_config()
-
-        self.set_data_root(data_root)
-
         self.price_cols = self._input_columns("prices")
         self.ratio_cols = self._input_columns("ratios")
         self.feature_groups = self._feature_groups()
@@ -91,8 +92,30 @@ class StockAssessment:
             for group in self.feature_groups.values()
             for key, meta in group.items()
         }
-
+    
         self._validate_catalog()
+    
+        self.prices: pd.DataFrame | None = None
+        self.ratios: pd.DataFrame | None = None
+        self.ticker_names = None
+    
+        if (price_csv is None) != (ratio_csv is None):
+            raise ValueError(
+                "price_csv and ratio_csv must be provided together"
+            )
+    
+        if price_csv is not None and ratio_csv is not None:
+            self.load_inputs(
+                price_csv=price_csv,
+                ratio_csv=ratio_csv,
+                data_root=data_root,
+            )
+    
+        if ticker_name_csv is not None:
+            self.load_ticker_names(
+                ticker_name_csv,
+                data_root=data_root
+            )
 
     @staticmethod
     def _load_config() -> dict:
@@ -188,34 +211,20 @@ class StockAssessment:
                         "is missing 'description'"
                     )
 
-    def set_data_root(
-        self,
-        data_root: str | Path | None = None,
-    ) -> None:
-        """Set the base directory used to resolve input data paths.
-
-        If None, input paths are resolved from the current working directory
-        when load_inputs() is called.
-        """
-        if data_root is None:
-            self.data_root = None
-            return
-
-        path = Path(data_root).expanduser()
-
-        if not path.is_absolute():
-            path = Path.cwd() / path
-
-        self.data_root = path.resolve()
-
     def load_inputs(
         self,
+        *,
         price_csv: str | Path,
         ratio_csv: str | Path,
+        data_root: str | Path | None = None
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
-        """Load the CSV formats described by the YAML catalog."""
-        data_root = self.data_root or Path.cwd()
+        """Load and store the CSV inputs described by the YAML catalog."""
 
+        data_root = (
+            Path.cwd()
+            if data_root is None
+            else Path(data_root).expanduser().resolve()
+        )
         price_path = data_root / price_csv
         ratio_path = data_root / ratio_csv
 
@@ -245,14 +254,14 @@ class StockAssessment:
         ratio_ticker = self.ratio_cols["ticker"]
         ratio_date = self.ratio_cols["date"]
 
-        prices = pd.read_csv(
+        self.prices = pd.read_csv(
             price_path,
             dtype={
                 price_date: "string",
             },
         )
 
-        ratios = pd.read_csv(
+        self.ratios = pd.read_csv(
             ratio_path,
             dtype={
                 ratio_ticker: "string",
@@ -260,25 +269,57 @@ class StockAssessment:
             },
         )
 
-        return prices, ratios
+        return self.prices, self.ratios
+
+    
+    def load_ticker_names(
+        self,
+        ticker_name_csv: str | Path,
+        *,
+        data_root: str | Path | None = None,
+        ticker_col = '종목코드',
+        name_col = '종목명'
+    ):
+        """Load and store ticker-name mappings."""
+
+        data_root = (
+            Path.cwd()
+            if data_root is None
+            else Path(data_root).expanduser().resolve()
+        )
+        ticker_name_csv = data_root / ticker_name_csv
+    
+        df = pd.read_csv(
+            ticker_name_csv,
+            encoding="euc-kr",
+        )
+    
+        self.ticker_names = (
+            df.set_index(ticker_col)[name_col]
+        )
+    
+        return self.ticker_names
+        
 
     def assess(
         self,
-        prices: pd.DataFrame,
-        ratios: pd.DataFrame,
-        *,
         as_of: Optional[
             str | pd.Timestamp
         ] = None,
     ) -> pd.DataFrame:
-        """Assess all tickers shared by ``prices`` and ``ratios``.
+        """Assess all tickers shared by the loaded price and ratio inputs.
 
         Returns one row per ticker. No feature-family composite score and no
         trading decision are produced.
         """
+        if self.prices is None or self.ratios is None:
+            raise ValueError(
+                "inputs are not loaded; call load_inputs() first"
+            )
+
         p, r = self._prepare_inputs(
-            prices,
-            ratios,
+            self.prices,
+            self.ratios,
         )
 
         pc = self.price_cols
