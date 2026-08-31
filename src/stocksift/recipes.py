@@ -439,7 +439,7 @@ def selection_trajectory(
             "text-align: center"
         )
     
-    return (
+    styler = (
         trajectory.style
         .map(_cell_style)
         .set_properties(
@@ -447,4 +447,38 @@ def selection_trajectory(
                 "text-align": "center",
             }
         )
+    )
+    
+    ticker_names = getattr(
+        assessment,
+        "ticker_names",
+        None,
+    )
+    
+    if ticker_names is None:
+        return styler
+    
+    def _ticker_name(ticker):
+        if pd.isna(ticker):
+            return ""
+    
+        name = ticker_names.get(
+            ticker,
+            "",
+        )
+    
+        return (
+            ""
+            if pd.isna(name)
+            else str(name)
+        )
+    
+    tooltips = trajectory.apply(
+        lambda column: column.map(
+            _ticker_name
+        )
+    )
+    
+    return styler.set_tooltips(
+        tooltips
     )
