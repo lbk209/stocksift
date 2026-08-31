@@ -101,18 +101,32 @@ def evaluate_recipe(
     as_of,
     policies: Sequence[SelectionPolicy] | None = None,
     horizons: Iterable[int] = (1, 3, 6),
+    quantiles: int = 5,
+    result: str = "detail",
+    plot: str | bool = False,
     tickers: Iterable[str] | None = None,
-) -> pd.DataFrame:
-    """Generate point-in-time features, apply a recipe, and evaluate returns.
-
-    ``as_of`` is passed to ``assessment.assess`` so every selection feature is
-    regenerated from information available at that point in time. Forward
-    returns are then calculated from the price data owned by ``assessment``.
-    """
+) -> Any:
+    """Assess, select, and evaluate a stock-selection recipe."""
 
     features = assessment.assess(
         as_of=as_of,
     )
+
+    if policies is None:
+        policies = core_long_selection()
+    else:
+        policies = list(policies)
+
+    if tickers is None:
+        universe = features
+    else:
+        requested = list(
+            dict.fromkeys(tickers)
+        )
+
+        universe = features.loc[
+            features["ticker"].isin(requested)
+        ].copy()
 
     selected = apply_selection(
         features,
@@ -122,11 +136,7 @@ def evaluate_recipe(
 
     try:
         prices = assessment.prices
-        price_date_col = (
-            assessment.price_cols[
-                "date"
-            ]
-        )
+        price_date_col = assessment.price_cols["date"]
     except (
         AttributeError,
         KeyError,
@@ -142,13 +152,22 @@ def evaluate_recipe(
             "assessment inputs are not loaded"
         )
 
+    rank_col = getattr(
+        policies[-1],
+        "rank_col",
+        "selection_rank",
+    )
+
     return evaluate_selection(
         selected,
         prices,
+        universe=universe,
         horizons=horizons,
-        result="detail",
-        plot=False,
+        quantiles=quantiles,
+        result=result,
+        plot=plot,
         ticker_col="ticker",
         as_of_col="as_of_date",
         price_date_col=price_date_col,
+        rank_col=rank_col,
     )
