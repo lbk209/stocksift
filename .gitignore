@@ -1,5 +1,6 @@
 tests/
 _private/
+del/
 
 
 # Byte-compiled / optimized / DLL files
