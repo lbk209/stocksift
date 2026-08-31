@@ -75,6 +75,7 @@ class StockAssessment:
         *,
         price_csv: str | Path | None = None,
         ratio_csv: str | Path | None = None,
+        ticker_name_csv: str | Path | None = None,
         data_root: str | Path | None = None,
     ) -> None:
         self.config = self._load_config()
@@ -91,21 +92,28 @@ class StockAssessment:
             for group in self.feature_groups.values()
             for key, meta in group.items()
         }
-
+    
         self._validate_catalog()
-
+    
         self.prices: pd.DataFrame | None = None
         self.ratios: pd.DataFrame | None = None
-
+        self.ticker_names = None
+    
         if (price_csv is None) != (ratio_csv is None):
             raise ValueError(
                 "price_csv and ratio_csv must be provided together"
             )
-
+    
         if price_csv is not None and ratio_csv is not None:
             self.load_inputs(
                 price_csv=price_csv,
                 ratio_csv=ratio_csv,
+                data_root=data_root,
+            )
+    
+        if ticker_name_csv is not None:
+            self.load_ticker_names(
+                ticker_name_csv,
                 data_root=data_root
             )
 
@@ -262,6 +270,36 @@ class StockAssessment:
         )
 
         return self.prices, self.ratios
+
+    
+    def load_ticker_names(
+        self,
+        ticker_name_csv: str | Path,
+        *,
+        data_root: str | Path | None = None,
+        ticker_col = '종목코드',
+        name_col = '종목명'
+    ):
+        """Load and store ticker-name mappings."""
+
+        data_root = (
+            Path.cwd()
+            if data_root is None
+            else Path(data_root).expanduser().resolve()
+        )
+        ticker_name_csv = data_root / ticker_name_csv
+    
+        df = pd.read_csv(
+            ticker_name_csv,
+            encoding="euc-kr",
+        )
+    
+        self.ticker_names = (
+            df.set_index(ticker_col)[name_col]
+        )
+    
+        return self.ticker_names
+        
 
     def assess(
         self,
