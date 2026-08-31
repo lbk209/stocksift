@@ -24,7 +24,11 @@ __all__ = [
     "browse_price_comparison",
 ]
 
-_INDICATORS = {"ma", "bb", "rsi", "ichimoku"}
+_INDICATOR_ORDER = ("ma", "bb", "rsi", "ichimoku")
+_INDICATORS = set(_INDICATOR_ORDER)
+
+_CONTROL_GROUP_SPACING = 24
+_INDICATOR_SPACING = 6
 
 
 def plot_price_chart(
@@ -52,8 +56,8 @@ def plot_price_chart(
     RSI is visible by default. MA, Bollinger, RSI, and approximate Ichimoku
     share ``indicator_line_width``; the close price uses ``price_line_width``.
 
-    The Plotly range selector and range slider only change the visible x-range.
-    They do not recalculate technical indicators.
+    The Plotly range selector only changes the visible x-range.
+    It does not recalculate technical indicators.
     """
     freq = _check_freq(freq)
     indicators = _check_indicators(indicators)
@@ -244,7 +248,11 @@ def plot_price_chart(
     fig.update_layout(
         title=f"{label} — {freq_label}",
         hovermode="x unified",
-        legend=dict(groupclick="togglegroup"),
+        showlegend=True,
+        legend=dict(
+            itemclick=False,
+            itemdoubleclick=False,
+        ),
         width=width,
         height=height,
         margin=dict(l=50, r=30, t=60, b=40),
@@ -269,10 +277,30 @@ def browse_price_chart(
     freq: str = "D",
     **plot_kwargs: Any,
 ) -> None:
-    """Browse single-stock technical charts with top-aligned one-row controls."""
+    """Browse technical charts with persistent indicator checkboxes.
+
+    Ticker, frequency, and indicator controls are treated as three UI groups.
+    The spacing between those groups is equal. Indicator checkbox state is
+    preserved when the ticker or frequency changes.
+    """
     widgets, display, clear_output = _notebook_tools()
     tickers = _check_tickers(prices, tickers, date_col=date_col)
     freq = _check_freq(freq)
+
+    available_indicators = _check_indicators(
+        plot_kwargs.pop("indicators", _INDICATOR_ORDER)
+    )
+    initial_visible = _check_indicators(
+        plot_kwargs.pop(
+            "visible_indicators",
+            ("ma", "bb", "rsi"),
+        )
+    )
+
+    if not initial_visible <= available_indicators:
+        raise ValueError(
+            "visible_indicators must be included in indicators"
+        )
 
     ticker_selector = widgets.Dropdown(
         options=[
@@ -281,11 +309,9 @@ def browse_price_chart(
         ],
         value=tickers[0],
         description="",
-        layout=widgets.Layout(
-            width="300px",
-            margin="0 20px 0 0"
-        ),
+        layout=widgets.Layout(width="300px"),
     )
+
     freq_selector = widgets.ToggleButtons(
         options=[
             ("Daily", "D"),
@@ -294,8 +320,60 @@ def browse_price_chart(
         value=freq,
         description="",
     )
+
+    indicator_labels = {
+        "ma": "MA",
+        "bb": "BB",
+        "rsi": "RSI",
+        "ichimoku": "Ichimoku",
+    }
+    indicator_checks = {}
+
+    for indicator in _INDICATOR_ORDER:
+        if indicator not in available_indicators:
+            continue
+
+        indicator_checks[indicator] = widgets.Checkbox(
+            value=indicator in initial_visible,
+            description=indicator_labels[indicator],
+            indent=False,
+            layout=widgets.Layout(
+                width="auto",
+                margin=f"0 {_INDICATOR_SPACING}px 0 0",
+            ),
+        )
+
+    indicator_controls = widgets.HBox(
+        list(indicator_checks.values()),
+        layout=widgets.Layout(
+            align_items="center",
+        ),
+    )
+
+    group_margin = f"0 {_CONTROL_GROUP_SPACING}px 0 0"
+
+    ticker_group = widgets.Box(
+        [ticker_selector],
+        layout=widgets.Layout(
+            margin=group_margin,
+        ),
+    )
+    freq_group = widgets.Box(
+        [freq_selector],
+        layout=widgets.Layout(
+            margin=group_margin,
+        ),
+    )
+    indicator_group = widgets.Box(
+        [indicator_controls],
+    )
+
     controls = widgets.HBox(
-        [ticker_selector, freq_selector],
+        [
+            ticker_group,
+            freq_group,
+            indicator_group,
+        ],
         layout=widgets.Layout(
             align_items="center",
             flex_flow="row",
@@ -304,6 +382,15 @@ def browse_price_chart(
     output = widgets.Output()
 
     def render(*_: object) -> None:
+        selected_indicators = tuple(
+            indicator
+            for indicator in _INDICATOR_ORDER
+            if (
+                indicator in indicator_checks
+                and indicator_checks[indicator].value
+            )
+        )
+
         with output:
             clear_output(wait=True)
             plot_price_chart(
@@ -312,15 +399,20 @@ def browse_price_chart(
                 ticker_names=ticker_names,
                 date_col=date_col,
                 freq=freq_selector.value,
+                indicators=selected_indicators,
+                visible_indicators=selected_indicators,
                 **plot_kwargs,
             ).show()
 
     ticker_selector.observe(render, names="value")
     freq_selector.observe(render, names="value")
+
+    for checkbox in indicator_checks.values():
+        checkbox.observe(render, names="value")
+
     render()
 
     display(widgets.VBox([controls, output]))
-
 
 def plot_price_comparison(
     prices: pd.DataFrame,
@@ -450,10 +542,7 @@ def browse_price_comparison(
         value=tuple(tickers[: min(2, len(tickers))]),
         description="",
         rows=4,
-        layout=widgets.Layout(
-            width="300px",
-            margin="0 20px 0 0"
-        ),
+        layout=widgets.Layout(width="300px"),
     )
     normalize_selector = widgets.ToggleButtons(
         options=[
@@ -463,10 +552,23 @@ def browse_price_comparison(
         value=normalize,
         description="",
     )
+    group_margin = f"0 {_CONTROL_GROUP_SPACING}px 0 0"
+    
+    ticker_group = widgets.Box(
+        [ticker_selector],
+        layout=widgets.Layout(
+            margin=group_margin,
+        ),
+    )
+    
+    normalize_group = widgets.Box(
+        [normalize_selector],
+    )
+    
     controls = widgets.HBox(
         [
-            ticker_selector,
-            normalize_selector,
+            ticker_group,
+            normalize_group,
         ],
         layout=widgets.Layout(
             align_items="center",
