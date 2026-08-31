@@ -2,7 +2,7 @@
 
 This module stores concrete combinations of selection policies. It also
 re-exports the selection evaluation utility so routine use can rely on
-``stock_assessment`` plus this module only.
+``assessment`` plus this module only.
 """
 
 from __future__ import annotations
@@ -97,8 +97,6 @@ def apply_selection(
 
 def evaluate_recipe(
     assessment,
-    prices: pd.DataFrame,
-    ratios: pd.DataFrame,
     *,
     as_of,
     policies: Sequence[SelectionPolicy] | None = None,
@@ -109,13 +107,10 @@ def evaluate_recipe(
 
     ``as_of`` is passed to ``assessment.assess`` so every selection feature is
     regenerated from information available at that point in time. Forward
-    returns are then calculated only from prices after the resulting
-    ``as_of_date``.
+    returns are then calculated from the price data owned by ``assessment``.
     """
 
     features = assessment.assess(
-        prices,
-        ratios,
         as_of=as_of,
     )
 
@@ -126,6 +121,7 @@ def evaluate_recipe(
     )
 
     try:
+        prices = assessment.prices
         price_date_col = (
             assessment.price_cols[
                 "date"
@@ -137,10 +133,14 @@ def evaluate_recipe(
         TypeError,
     ) as exc:
         raise ValueError(
-            "assessment must expose "
-            "price_cols['date'] "
-            "for recipe evaluation"
+            "assessment must expose loaded prices and "
+            "price_cols['date'] for recipe evaluation"
         ) from exc
+
+    if prices is None:
+        raise ValueError(
+            "assessment inputs are not loaded"
+        )
 
     return evaluate_selection(
         selected,
