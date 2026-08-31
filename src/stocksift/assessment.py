@@ -72,15 +72,12 @@ class StockAssessment:
 
     def __init__(
         self,
-        data_root: str | Path | None = None,
         *,
         price_csv: str | Path | None = None,
         ratio_csv: str | Path | None = None,
+        data_root: str | Path | None = None,
     ) -> None:
         self.config = self._load_config()
-
-        self.set_data_root(data_root)
-
         self.price_cols = self._input_columns("prices")
         self.ratio_cols = self._input_columns("ratios")
         self.feature_groups = self._feature_groups()
@@ -107,8 +104,9 @@ class StockAssessment:
 
         if price_csv is not None and ratio_csv is not None:
             self.load_inputs(
-                price_csv,
-                ratio_csv,
+                price_csv=price_csv,
+                ratio_csv=ratio_csv,
+                data_root=data_root
             )
 
     @staticmethod
@@ -205,34 +203,20 @@ class StockAssessment:
                         "is missing 'description'"
                     )
 
-    def set_data_root(
-        self,
-        data_root: str | Path | None = None,
-    ) -> None:
-        """Set the base directory used to resolve input data paths.
-
-        If None, input paths are resolved from the current working directory
-        when load_inputs() is called.
-        """
-        if data_root is None:
-            self.data_root = None
-            return
-
-        path = Path(data_root).expanduser()
-
-        if not path.is_absolute():
-            path = Path.cwd() / path
-
-        self.data_root = path.resolve()
-
     def load_inputs(
         self,
+        *,
         price_csv: str | Path,
         ratio_csv: str | Path,
+        data_root: str | Path | None = None
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Load and store the CSV inputs described by the YAML catalog."""
-        data_root = self.data_root or Path.cwd()
 
+        data_root = (
+            Path.cwd()
+            if data_root is None
+            else Path(data_root).expanduser().resolve()
+        )
         price_path = data_root / price_csv
         ratio_path = data_root / ratio_csv
 
@@ -281,7 +265,6 @@ class StockAssessment:
 
     def assess(
         self,
-        *,
         as_of: Optional[
             str | pd.Timestamp
         ] = None,
