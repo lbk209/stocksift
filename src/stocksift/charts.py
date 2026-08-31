@@ -275,14 +275,15 @@ def plot_price_comparison(
     ticker_names: Mapping[str, str] | None = None,
     date_col: str = "date",
     freq: str = "D",
-    base: float = 100.0,
+    base: float | None = 100.0,
 ) -> go.Figure:
     """Compare tickers using normalized closes from a common start date."""
     freq = _check_freq(freq)
     tickers = _check_tickers(prices, tickers, date_col=date_col)
 
-    if not isinstance(base, (int, float)) or base <= 0:
-        raise ValueError("base must be positive")
+    if base is not None:
+        if not isinstance(base, (int, float)) or base <= 0:
+            raise ValueError("base must be positive")
 
     data = prices[[date_col, *tickers]].copy()
     data[date_col] = pd.to_datetime(data[date_col], errors="coerce")
@@ -308,29 +309,31 @@ def plot_price_comparison(
         bad = first.index[first <= 0].tolist()
         raise ValueError(f"non-positive start prices for tickers: {bad}")
 
-    normalized = data.div(first).mul(float(base))
+    if base is None:
+        title = ''
+    else:
+        data = data.div(first).mul(float(base))
+        title = 'Normalized '
+        
     fig = go.Figure()
 
     for ticker in tickers:
         fig.add_trace(
             go.Scatter(
-                x=normalized.index,
-                y=normalized[ticker],
+                x=data.index,
+                y=data[ticker],
                 mode="lines",
                 name=_ticker_label(ticker, ticker_names),
             )
         )
 
     freq_label = "Daily" if freq == "D" else "Weekly"
-    start = normalized.index[0].date().isoformat()
+    start = data.index[0].date().isoformat()
 
     fig.update_layout(
-        title=(
-            f"Normalized Price Comparison — {freq_label} "
-            f"(base={base:g}, start={start})"
-        ),
+        title=f"{title}Price Comparison — {freq_label} ",
         hovermode="x unified",
-        yaxis_title=f"Normalized Price (base={base:g})",
+        yaxis_title=f"{title}Price" if base is None else f"{title}Price (base={base:g})" ,
         height=560,
         margin=dict(l=50, r=30, t=60, b=40),
     )
