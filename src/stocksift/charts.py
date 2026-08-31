@@ -35,15 +35,26 @@ def plot_price_chart(
     date_col: str = "date",
     freq: str = "D",
     indicators: Iterable[str] = ("ma", "bb", "rsi", "ichimoku"),
-    visible_indicators: Iterable[str] = ("ma", "bb"),
+    visible_indicators: Iterable[str] = ("ma", "bb", "rsi"),
     ma_windows: Sequence[int] = (20, 60),
     bb_window: int = 20,
     bb_std: float = 2.0,
     rsi_window: int = 14,
     ichimoku_windows: tuple[int, int, int] = (9, 26, 52),
     ichimoku_displacement: int = 26,
+    price_line_width: float = 2.0,
+    indicator_line_width: float = 1.0,
+    width: int | None = None,
+    height: int | None = None,
 ) -> go.Figure:
-    """Return a technical chart for one ticker."""
+    """Return a technical chart for one ticker.
+
+    RSI is visible by default. MA, Bollinger, RSI, and approximate Ichimoku
+    share ``indicator_line_width``; the close price uses ``price_line_width``.
+
+    The Plotly range selector and range slider only change the visible x-range.
+    They do not recalculate technical indicators.
+    """
     freq = _check_freq(freq)
     indicators = _check_indicators(indicators)
     visible = _check_indicators(visible_indicators)
@@ -55,10 +66,14 @@ def plot_price_chart(
     _check_windows((bb_window, rsi_window), "indicator windows")
     _check_windows(ichimoku_windows, "ichimoku_windows")
     _check_windows((ichimoku_displacement,), "ichimoku_displacement")
+    _check_positive_number(price_line_width, "price_line_width")
+    _check_positive_number(indicator_line_width, "indicator_line_width")
+    _check_figure_size(width, "width")
+    _check_figure_size(height, "height")
 
     if len(ichimoku_windows) != 3:
         raise ValueError("ichimoku_windows must contain exactly 3 values")
-    if not isinstance(bb_std, (int, float)) or bb_std <= 0:
+    if not isinstance(bb_std, (int, float)) or isinstance(bb_std, bool) or bb_std <= 0:
         raise ValueError("bb_std must be positive")
 
     close = _price_series(prices, ticker, date_col=date_col)
@@ -83,6 +98,7 @@ def plot_price_chart(
             y=data["close"],
             mode="lines",
             name="Close",
+            line=dict(width=price_line_width),
         ),
         row=1,
         col=1,
@@ -98,6 +114,7 @@ def plot_price_chart(
                     y=values,
                     mode="lines",
                     name=f"MA{window}",
+                    line=dict(width=indicator_line_width),
                     visible=state,
                 ),
                 row=1,
@@ -118,6 +135,7 @@ def plot_price_chart(
                 y=bb["upper"],
                 mode="lines",
                 name=f"Bollinger ({bb_window}, {bb_std:g})",
+                line=dict(width=indicator_line_width),
                 legendgroup="bb",
                 visible=state,
             ),
@@ -130,6 +148,7 @@ def plot_price_chart(
                 y=bb["lower"],
                 mode="lines",
                 name="Bollinger lower",
+                line=dict(width=indicator_line_width),
                 legendgroup="bb",
                 showlegend=False,
                 fill="tonexty",
@@ -161,6 +180,7 @@ def plot_price_chart(
                     y=ichi[column],
                     mode="lines",
                     name=name,
+                    line=dict(width=indicator_line_width),
                     legendgroup="ichimoku",
                     showlegend=showlegend,
                     fill=fill,
@@ -180,6 +200,7 @@ def plot_price_chart(
                 y=rsi,
                 mode="lines",
                 name=f"RSI{rsi_window}",
+                line=dict(width=indicator_line_width),
                 legendgroup="rsi",
                 visible=state,
             ),
@@ -193,7 +214,10 @@ def plot_price_chart(
                     x=rsi.index,
                     y=[level] * len(rsi),
                     mode="lines",
-                    line=dict(dash="dot"),
+                    line=dict(
+                        width=indicator_line_width,
+                        dash="dot",
+                    ),
                     name=f"RSI {level}",
                     legendgroup="rsi",
                     showlegend=False,
@@ -214,15 +238,24 @@ def plot_price_chart(
     label = _ticker_label(ticker, ticker_names)
     freq_label = "Daily" if freq == "D" else "Weekly"
 
+    if height is None:
+        height = 760 if has_rsi else 600
+
     fig.update_layout(
         title=f"{label} — {freq_label}",
         hovermode="x unified",
         legend=dict(groupclick="togglegroup"),
-        height=720 if has_rsi else 560,
+        width=width,
+        height=height,
         margin=dict(l=50, r=30, t=60, b=40),
     )
     fig.update_yaxes(title_text="Price", row=1, col=1)
-    fig.update_xaxes(rangeslider_visible=False)
+
+    _add_time_controls(
+        fig,
+        row=2 if has_rsi else 1,
+        col=1,
+    )
 
     return fig
 
@@ -236,18 +269,37 @@ def browse_price_chart(
     freq: str = "D",
     **plot_kwargs: Any,
 ) -> None:
-    """Browse single-stock technical charts with a Jupyter Dropdown."""
+    """Browse single-stock technical charts with top-aligned one-row controls."""
     widgets, display, clear_output = _notebook_tools()
     tickers = _check_tickers(prices, tickers, date_col=date_col)
+    freq = _check_freq(freq)
 
-    selector = widgets.Dropdown(
+    ticker_selector = widgets.Dropdown(
         options=[
             (_ticker_label(ticker, ticker_names), ticker)
             for ticker in tickers
         ],
         value=tickers[0],
-        description="Ticker:",
-        layout=widgets.Layout(width="420px"),
+        description="",
+        layout=widgets.Layout(
+            width="300px",
+            margin="0 20px 0 0"
+        ),
+    )
+    freq_selector = widgets.ToggleButtons(
+        options=[
+            ("Daily", "D"),
+            ("Weekly", "W"),
+        ],
+        value=freq,
+        description="",
+    )
+    controls = widgets.HBox(
+        [ticker_selector, freq_selector],
+        layout=widgets.Layout(
+            align_items="center",
+            flex_flow="row",
+        ),
     )
     output = widgets.Output()
 
@@ -256,16 +308,18 @@ def browse_price_chart(
             clear_output(wait=True)
             plot_price_chart(
                 prices,
-                selector.value,
+                ticker_selector.value,
                 ticker_names=ticker_names,
                 date_col=date_col,
-                freq=freq,
+                freq=freq_selector.value,
                 **plot_kwargs,
             ).show()
 
-    selector.observe(render, names="value")
+    ticker_selector.observe(render, names="value")
+    freq_selector.observe(render, names="value")
     render()
-    display(widgets.VBox([selector, output]))
+
+    display(widgets.VBox([controls, output]))
 
 
 def plot_price_comparison(
@@ -276,14 +330,19 @@ def plot_price_comparison(
     date_col: str = "date",
     freq: str = "D",
     base: float | None = 100.0,
+    price_line_width: float = 2.0,
+    width: int | None = None,
+    height: int | None = None,
 ) -> go.Figure:
-    """Compare tickers using normalized closes from a common start date."""
+    """Compare tickers using raw or normalized closes from a common start date."""
     freq = _check_freq(freq)
     tickers = _check_tickers(prices, tickers, date_col=date_col)
+    _check_positive_number(price_line_width, "price_line_width")
+    _check_figure_size(width, "width")
+    _check_figure_size(height, "height")
 
     if base is not None:
-        if not isinstance(base, (int, float)) or base <= 0:
-            raise ValueError("base must be positive")
+        _check_positive_number(base, "base")
 
     data = prices[[date_col, *tickers]].copy()
     data[date_col] = pd.to_datetime(data[date_col], errors="coerce")
@@ -310,11 +369,13 @@ def plot_price_comparison(
         raise ValueError(f"non-positive start prices for tickers: {bad}")
 
     if base is None:
-        title = ''
+        title_prefix = ""
+        yaxis_title = "Price"
     else:
         data = data.div(first).mul(float(base))
-        title = 'Normalized '
-        
+        title_prefix = "Normalized "
+        yaxis_title = f"Normalized Price (base={base:g})"
+
     fig = go.Figure()
 
     for ticker in tickers:
@@ -324,19 +385,25 @@ def plot_price_comparison(
                 y=data[ticker],
                 mode="lines",
                 name=_ticker_label(ticker, ticker_names),
+                line=dict(width=price_line_width),
             )
         )
 
     freq_label = "Daily" if freq == "D" else "Weekly"
-    start = data.index[0].date().isoformat()
+
+    if height is None:
+        height = 600
 
     fig.update_layout(
-        title=f"{title}Price Comparison — {freq_label} ",
+        title=f"{title_prefix}Price Comparison — {freq_label}",
         hovermode="x unified",
-        yaxis_title=f"{title}Price" if base is None else f"{title}Price (base={base:g})" ,
-        height=560,
+        yaxis_title=yaxis_title,
+        width=width,
+        height=height,
         margin=dict(l=50, r=30, t=60, b=40),
     )
+
+    _add_time_controls(fig)
 
     return fig
 
@@ -347,29 +414,72 @@ def browse_price_comparison(
     *,
     ticker_names: Mapping[str, str] | None = None,
     date_col: str = "date",
-    freq: str = "D",
+    normalize: bool = True,
     base: float = 100.0,
+    price_line_width: float = 2.0,
+    width: int | None = None,
+    height: int | None = None,
 ) -> None:
-    """Browse normalized multi-stock comparisons with SelectMultiple."""
+    """Browse multi-stock comparisons with top-aligned one-row controls.
+
+    The ticker selector is fixed to four visible rows and scrolls internally
+    when more tickers are available. Selected tickers are also visible in the
+    Plotly legend.
+
+    ``normalize`` controls the initial state of the Normalized/Raw UI toggle.
+    Comparison browsing uses the default daily frequency; callers that need
+    another frequency can call ``plot_price_comparison`` directly.
+    When normalized, ``base`` is used as the common starting value.
+    """
     widgets, display, clear_output = _notebook_tools()
     tickers = _check_tickers(prices, tickers, date_col=date_col)
 
-    selector = widgets.SelectMultiple(
+    if not isinstance(normalize, bool):
+        raise TypeError("normalize must be a bool")
+
+    _check_positive_number(base, "base")
+    _check_positive_number(price_line_width, "price_line_width")
+    _check_figure_size(width, "width")
+    _check_figure_size(height, "height")
+
+    ticker_selector = widgets.SelectMultiple(
         options=[
             (_ticker_label(ticker, ticker_names), ticker)
             for ticker in tickers
         ],
         value=tuple(tickers[: min(2, len(tickers))]),
-        description="Tickers:",
-        rows=min(max(len(tickers), 4), 10),
-        layout=widgets.Layout(width="420px"),
+        description="",
+        rows=4,
+        layout=widgets.Layout(
+            width="300px",
+            margin="0 20px 0 0"
+        ),
+    )
+    normalize_selector = widgets.ToggleButtons(
+        options=[
+            ("Normalized", True),
+            ("Raw", False),
+        ],
+        value=normalize,
+        description="",
+    )
+    controls = widgets.HBox(
+        [
+            ticker_selector,
+            normalize_selector,
+        ],
+        layout=widgets.Layout(
+            align_items="center",
+            flex_flow="row",
+        ),
     )
     output = widgets.Output()
 
     def render(*_: object) -> None:
         with output:
             clear_output(wait=True)
-            selected = list(selector.value)
+            selected = list(ticker_selector.value)
+
             if not selected:
                 print("Select at least one ticker.")
                 return
@@ -379,13 +489,17 @@ def browse_price_comparison(
                 selected,
                 ticker_names=ticker_names,
                 date_col=date_col,
-                freq=freq,
-                base=base,
+                base=base if normalize_selector.value else None,
+                price_line_width=price_line_width,
+                width=width,
+                height=height,
             ).show()
 
-    selector.observe(render, names="value")
+    ticker_selector.observe(render, names="value")
+    normalize_selector.observe(render, names="value")
     render()
-    display(widgets.VBox([selector, output]))
+
+    display(widgets.VBox([controls, output]))
 
 
 def _price_series(
@@ -503,6 +617,62 @@ def _ichimoku(
     )
 
 
+def _add_time_controls(
+    fig: go.Figure,
+    *,
+    row: int | None = None,
+    col: int | None = None,
+) -> None:
+    """Add range buttons inside the upper-left of the main plot area."""
+    kwargs: dict[str, Any] = {
+        "rangeslider_visible": False,
+        "rangeselector": dict(
+            x=0.01,
+            y=0.99,
+            xanchor="left",
+            yanchor="top",
+            buttons=[
+                dict(
+                    count=3,
+                    label="3M",
+                    step="month",
+                    stepmode="backward",
+                ),
+                dict(
+                    count=6,
+                    label="6M",
+                    step="month",
+                    stepmode="backward",
+                ),
+                dict(
+                    count=1,
+                    label="1Y",
+                    step="year",
+                    stepmode="backward",
+                ),
+                dict(
+                    count=3,
+                    label="3Y",
+                    step="year",
+                    stepmode="backward",
+                ),
+                dict(
+                    label="ALL",
+                    step="all",
+                ),
+            ],
+        ),
+    }
+
+    if row is None or col is None:
+        fig.update_xaxes(**kwargs)
+    else:
+        fig.update_xaxes(
+            **kwargs,
+            row=row,
+            col=col,
+        )
+
 def _check_freq(freq: str) -> str:
     freq = str(freq).upper()
     if freq not in {"D", "W"}:
@@ -519,6 +689,7 @@ def _check_indicators(indicators: Iterable[str]) -> set[str]:
     unknown = result - _INDICATORS
     if unknown:
         raise ValueError(f"unsupported indicators: {sorted(unknown)}")
+
     return result
 
 
@@ -530,6 +701,27 @@ def _check_windows(values: Iterable[int], name: str) -> None:
             or value <= 0
         ):
             raise ValueError(f"{name} must contain positive integers")
+
+
+def _check_positive_number(value: object, name: str) -> None:
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or value <= 0
+    ):
+        raise ValueError(f"{name} must be positive")
+
+
+def _check_figure_size(value: int | None, name: str) -> None:
+    if value is None:
+        return
+
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or value <= 0
+    ):
+        raise ValueError(f"{name} must be a positive integer or None")
 
 
 def _check_tickers(
@@ -553,7 +745,11 @@ def _check_tickers(
     if not all(isinstance(t, str) and t for t in result):
         raise ValueError("tickers must be non-empty strings")
 
-    missing = [ticker for ticker in result if ticker not in prices.columns]
+    missing = [
+        ticker
+        for ticker in result
+        if ticker not in prices.columns
+    ]
     if missing:
         raise ValueError(f"tickers missing from prices: {missing}")
 
