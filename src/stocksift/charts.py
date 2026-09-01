@@ -268,8 +268,9 @@ def plot_price_chart(
             data,
             windows=ichimoku_windows,
             displacement=ichimoku_displacement,
+            freq=freq,
         )
-        ichi = ichi.loc[view.index]
+        ichi = ichi.loc[ichi.index >= view.index.min()]
 
         ichimoku_name = (
             "Ichimoku" if price_kind == "ohlcv"
@@ -444,7 +445,7 @@ def plot_price_chart(
         height = 600 + 110 * extra_panels
 
     fig.update_layout(
-        title=f"{label} — {freq_label}",
+        #title=f"{label} — {freq_label}",
         hovermode="x unified",
         showlegend=True,
         legend=dict(
@@ -717,7 +718,7 @@ def plot_price_comparison(
         height = 600
 
     fig.update_layout(
-        title=f"{title_prefix}Price Comparison — {freq_label}",
+        #title=f"{title_prefix}Price Comparison — {freq_label}",
         hovermode="x unified",
         yaxis_title=yaxis_title,
         width=width,
@@ -1167,6 +1168,7 @@ def _ichimoku(
     *,
     windows: tuple[int, int, int],
     displacement: int,
+    freq: str,
 ) -> pd.DataFrame:
     tenkan_n, kijun_n, senkou_b_n = windows
     high, low, close = data["high"], data["low"], data["close"]
@@ -1180,21 +1182,40 @@ def _ichimoku(
         + low.rolling(kijun_n).min()
     ) / 2
 
-    return pd.DataFrame(
-        {
-            "tenkan": tenkan,
-            "kijun": kijun,
-            "senkou_a": ((tenkan + kijun) / 2).shift(displacement),
-            "senkou_b": (
-                (
-                    high.rolling(senkou_b_n).max()
-                    + low.rolling(senkou_b_n).min()
-                )
-                / 2
-            ).shift(displacement),
-            "chikou": close.shift(-displacement),
-        }
+    senkou_a = (tenkan + kijun) / 2
+    senkou_b = (
+        high.rolling(senkou_b_n).max()
+        + low.rolling(senkou_b_n).min()
+    ) / 2
+
+    if freq == "D":
+        future_index = pd.bdate_range(
+            start=data.index[-1] + pd.offsets.BDay(1),
+            periods=displacement,
+        )
+    else:
+        future_index = pd.date_range(
+            start=data.index[-1] + pd.offsets.Week(weekday=4),
+            periods=displacement,
+            freq="W-FRI",
+        )
+
+    full_index = data.index.append(future_index)
+    result = pd.DataFrame(index=full_index)
+
+    result["tenkan"] = tenkan
+    result["kijun"] = kijun
+    result["senkou_a"] = pd.Series(
+        senkou_a.to_numpy(),
+        index=full_index[displacement:],
     )
+    result["senkou_b"] = pd.Series(
+        senkou_b.to_numpy(),
+        index=full_index[displacement:],
+    )
+    result["chikou"] = close.shift(-displacement)
+
+    return result
 
 
 def _check_period(period: str) -> str:
