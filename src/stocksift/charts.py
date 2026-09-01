@@ -1,10 +1,17 @@
-"""Plotly price charts for stocksift close-price data.
+"""Plotly price charts for stocksift price data.
 
-Input format:
+Supported input formats
+-----------------------
+Close-only wide:
     date | 005930 | 000660 | ...
 
-Ichimoku is approximate because the source data contains closes only.
-Weekly pseudo-high/low values use the max/min daily closes in each week.
+OHLCV MultiIndex:
+    index: (date, ticker)
+    columns: open, high, low, close, volume
+
+Close-only data uses pseudo high/low values for Ichimoku. OHLCV data uses
+the actual high/low values. Weekly OHLCV aggregation uses first/max/min/last
+for OHLC and sums volume.
 """
 
 from __future__ import annotations
@@ -24,12 +31,14 @@ __all__ = [
     "browse_price_comparison",
 ]
 
-_INDICATOR_ORDER = ("ma", "bb", "rsi", "ichimoku")
+_INDICATOR_ORDER = ("ma", "bb", "rsi", "ichimoku", "volume")
 _INDICATORS = set(_INDICATOR_ORDER)
+
+_OHLCV_COLUMNS = ("open", "high", "low", "close", "volume")
 
 _CONTROL_GROUP_SPACING = 12
 _INDICATOR_SPACING = 6
-_CONTROL_HEIGHT =  "30px"
+_CONTROL_HEIGHT = "30px"
 
 _PERIOD_OPTIONS = ("3M", "6M", "1Y", "3Y", "ALL")
 
@@ -57,17 +66,24 @@ def plot_price_chart(
 ) -> go.Figure:
     """Return a technical chart for one ticker.
 
-    RSI is visible by default. MA, Bollinger, RSI, and approximate Ichimoku
-    share ``indicator_line_width``; the close price uses ``price_line_width``.
+    RSI is visible by default. MA, Bollinger, RSI, and Ichimoku share
+    ``indicator_line_width``; the close price uses ``price_line_width``.
 
     Technical indicators are calculated from the full available history,
-    then the selected period is displayed.
+    then the selected period is displayed. Close-only input uses approximate
+    Ichimoku; OHLCV input uses actual high/low values and can display volume.
     """
     freq = _check_freq(freq)
     period = _check_period(period)
     indicators = _check_indicators(indicators)
     visible = _check_indicators(visible_indicators)
+    supported = _available_indicators(prices, date_col=date_col)
 
+    unsupported = indicators - supported
+    if unsupported:
+        raise ValueError(
+            f"indicators unavailable for this price data: {sorted(unsupported)}"
+        )
     if not visible <= indicators:
         raise ValueError("visible_indicators must be included in indicators")
 
@@ -85,21 +101,43 @@ def plot_price_chart(
     if not isinstance(bb_std, (int, float)) or isinstance(bb_std, bool) or bb_std <= 0:
         raise ValueError("bb_std must be positive")
 
-    close = _price_series(prices, ticker, date_col=date_col)
-    data = _price_periods(close, freq=freq)
+    price_kind = _price_kind(prices, date_col=date_col)
+    data = _ticker_price_periods(
+        prices,
+        ticker,
+        date_col=date_col,
+        freq=freq,
+    )
     view = _slice_period(data, period=period)
-    has_rsi = "rsi" in indicators
 
-    fig = (
-        make_subplots(
+    has_rsi = "rsi" in indicators
+    has_volume = "volume" in indicators
+    extra_rows = int(has_rsi) + int(has_volume)
+
+    if extra_rows == 0:
+        fig = make_subplots(rows=1, cols=1)
+    elif extra_rows == 1:
+        fig = make_subplots(
             rows=2,
             cols=1,
             shared_xaxes=True,
             vertical_spacing=0.04,
             row_heights=[0.78, 0.22],
         )
-        if has_rsi
-        else make_subplots(rows=1, cols=1)
+    else:
+        fig = make_subplots(
+            rows=3,
+            cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.03,
+            row_heights=[0.68, 0.17, 0.15],
+        )
+
+    rsi_row = 2 if has_rsi else None
+    volume_row = (
+        3 if has_rsi and has_volume
+        else 2 if has_volume
+        else None
     )
 
     fig.add_trace(
@@ -179,8 +217,12 @@ def plot_price_chart(
         )
         ichi = ichi.loc[view.index]
 
+        ichimoku_name = (
+            "Ichimoku" if price_kind == "ohlcv"
+            else "Approx. Ichimoku"
+        )
         traces = [
-            ("tenkan", "Approx. Ichimoku", True, None),
+            ("tenkan", ichimoku_name, True, None),
             ("kijun", "Kijun", False, None),
             ("senkou_a", "Senkou A", False, None),
             ("senkou_b", "Senkou B", False, "tonexty"),
@@ -238,14 +280,34 @@ def plot_price_chart(
                     hoverinfo="skip",
                     visible=state,
                 ),
-                row=2,
+                row=rsi_row,
                 col=1,
             )
 
         fig.update_yaxes(
             title_text="RSI",
             range=[0, 100],
-            row=2,
+            row=rsi_row,
+            col=1,
+        )
+
+    if has_volume:
+        state = _visibility("volume", visible)
+        volume = view["volume"]
+
+        fig.add_trace(
+            go.Bar(
+                x=volume.index,
+                y=volume,
+                name="Volume",
+                visible=state,
+            ),
+            row=volume_row,
+            col=1,
+        )
+        fig.update_yaxes(
+            title_text="Volume",
+            row=volume_row,
             col=1,
         )
 
@@ -253,7 +315,12 @@ def plot_price_chart(
     freq_label = "Daily" if freq == "D" else "Weekly"
 
     if height is None:
-        height = 760 if has_rsi else 600
+        if has_rsi and has_volume:
+            height = 840
+        elif has_rsi or has_volume:
+            height = 760
+        else:
+            height = 600
 
     fig.update_layout(
         title=f"{label} — {freq_label}",
@@ -294,9 +361,23 @@ def browse_price_chart(
     freq = _check_freq(freq)
     period = _check_period(period)
 
-    available_indicators = _check_indicators(
-        plot_kwargs.pop("indicators", _INDICATOR_ORDER)
+    supported_indicators = _available_indicators(
+        prices,
+        date_col=date_col,
     )
+    requested_indicators = plot_kwargs.pop("indicators", None)
+
+    if requested_indicators is None:
+        available_indicators = supported_indicators
+    else:
+        available_indicators = _check_indicators(requested_indicators)
+        unsupported = available_indicators - supported_indicators
+        if unsupported:
+            raise ValueError(
+                "indicators unavailable for this price data: "
+                f"{sorted(unsupported)}"
+            )
+
     initial_visible = _check_indicators(
         plot_kwargs.pop(
             "visible_indicators",
@@ -335,6 +416,7 @@ def browse_price_chart(
         "bb": "BB",
         "rsi": "RSI",
         "ichimoku": "Ichimoku",
+        "volume": "Volume",
     }
     indicator_checks = {}
 
@@ -467,21 +549,12 @@ def plot_price_comparison(
     if base is not None:
         _check_positive_number(base, "base")
 
-    data = prices[[date_col, *tickers]].copy()
-    data[date_col] = pd.to_datetime(data[date_col], errors="coerce")
-    if data[date_col].isna().any():
-        raise ValueError(f"{date_col!r} contains invalid dates")
-
-    data = (
-        data.drop_duplicates(date_col, keep="last")
-        .sort_values(date_col)
-        .set_index(date_col)
+    data = _close_matrix(
+        prices,
+        tickers,
+        date_col=date_col,
+        freq=freq,
     )
-    data = data.apply(pd.to_numeric, errors="coerce")
-
-    if freq == "W":
-        data = data.resample("W-FRI").last()
-
     data = data.dropna(subset=tickers)
     if data.empty:
         raise ValueError("no common valid dates for requested tickers")
@@ -658,6 +731,68 @@ def browse_price_comparison(
     display(widgets.VBox([controls, output]))
 
 
+def _price_kind(
+    prices: pd.DataFrame,
+    *,
+    date_col: str,
+) -> str:
+    if not isinstance(prices, pd.DataFrame):
+        raise TypeError("prices must be a pandas DataFrame")
+
+    if (
+        isinstance(prices.index, pd.MultiIndex)
+        and prices.index.nlevels == 2
+        and set(_OHLCV_COLUMNS) <= set(prices.columns)
+    ):
+        return "ohlcv"
+
+    if date_col in prices.columns:
+        return "close"
+
+    raise ValueError(
+        "unsupported price format: expected close-wide data with "
+        f"{date_col!r} plus ticker columns, or a 2-level (date, ticker) "
+        "MultiIndex with open/high/low/close/volume columns"
+    )
+
+
+def _available_indicators(
+    prices: pd.DataFrame,
+    *,
+    date_col: str,
+) -> set[str]:
+    kind = _price_kind(prices, date_col=date_col)
+
+    if kind == "ohlcv":
+        return set(_INDICATOR_ORDER)
+
+    return {"ma", "bb", "rsi", "ichimoku"}
+
+
+def _ticker_price_periods(
+    prices: pd.DataFrame,
+    ticker: str,
+    *,
+    date_col: str,
+    freq: str,
+) -> pd.DataFrame:
+    kind = _price_kind(prices, date_col=date_col)
+
+    if kind == "ohlcv":
+        return _ohlcv_ticker_periods(
+            prices,
+            ticker,
+            freq=freq,
+        )
+
+    close = _price_series(
+        prices,
+        ticker,
+        date_col=date_col,
+    )
+    return _close_price_periods(close, freq=freq)
+
+
 def _price_series(
     prices: pd.DataFrame,
     ticker: str,
@@ -687,10 +822,18 @@ def _price_series(
     return close.rename("close")
 
 
-def _price_periods(close: pd.Series, *, freq: str) -> pd.DataFrame:
+def _close_price_periods(
+    close: pd.Series,
+    *,
+    freq: str,
+) -> pd.DataFrame:
     if freq == "D":
         return pd.DataFrame(
-            {"high": close, "low": close, "close": close}
+            {
+                "high": close,
+                "low": close,
+                "close": close,
+            }
         )
 
     return close.resample("W-FRI").agg(
@@ -698,6 +841,105 @@ def _price_periods(close: pd.Series, *, freq: str) -> pd.DataFrame:
         low="min",
         close="last",
     ).dropna(subset=["close"])
+
+
+def _ohlcv_ticker_periods(
+    prices: pd.DataFrame,
+    ticker: str,
+    *,
+    freq: str,
+) -> pd.DataFrame:
+    _check_tickers(prices, [ticker], date_col="date")
+
+    data = prices.xs(ticker, level=1).copy()
+    data = data.loc[:, list(_OHLCV_COLUMNS)]
+    data.index = pd.to_datetime(data.index, errors="coerce")
+
+    if data.index.isna().any():
+        raise ValueError("OHLCV date index contains invalid dates")
+
+    data = (
+        data.loc[~data.index.duplicated(keep="last")]
+        .sort_index()
+        .apply(pd.to_numeric, errors="coerce")
+    )
+    data = data.dropna(subset=["open", "high", "low", "close"])
+
+    if data.empty:
+        raise ValueError(f"{ticker!r} has no valid OHLCV prices")
+
+    price_cols = ["open", "high", "low", "close"]
+    if (data[price_cols] <= 0).any().any():
+        raise ValueError(f"{ticker!r} contains non-positive OHLC prices")
+    if (data["volume"].dropna() < 0).any():
+        raise ValueError(f"{ticker!r} contains negative volume")
+
+    if freq == "D":
+        return data
+
+    return data.resample("W-FRI").agg(
+        open=("open", "first"),
+        high=("high", "max"),
+        low=("low", "min"),
+        close=("close", "last"),
+        volume=("volume", "sum"),
+    ).dropna(subset=["close"])
+
+
+def _close_matrix(
+    prices: pd.DataFrame,
+    tickers: Sequence[str],
+    *,
+    date_col: str,
+    freq: str,
+) -> pd.DataFrame:
+    kind = _price_kind(prices, date_col=date_col)
+
+    if kind == "close":
+        data = prices[[date_col, *tickers]].copy()
+        data[date_col] = pd.to_datetime(
+            data[date_col],
+            errors="coerce",
+        )
+        if data[date_col].isna().any():
+            raise ValueError(f"{date_col!r} contains invalid dates")
+
+        data = (
+            data.drop_duplicates(date_col, keep="last")
+            .sort_values(date_col)
+            .set_index(date_col)
+        )
+        data = data.apply(pd.to_numeric, errors="coerce")
+    else:
+        close = pd.to_numeric(prices["close"], errors="coerce")
+        dates = pd.to_datetime(
+            close.index.get_level_values(0),
+            errors="coerce",
+        )
+        ticker_values = close.index.get_level_values(1)
+
+        if dates.isna().any():
+            raise ValueError("OHLCV date index contains invalid dates")
+
+        tidy = pd.DataFrame(
+            {
+                date_col: dates,
+                "_ticker": ticker_values,
+                "_close": close.to_numpy(),
+            }
+        )
+        data = tidy.pivot_table(
+            index=date_col,
+            columns="_ticker",
+            values="_close",
+            aggfunc="last",
+        )
+        data = data.reindex(columns=list(tickers)).sort_index()
+
+    if freq == "W":
+        data = data.resample("W-FRI").last()
+
+    return data
 
 
 def _bollinger(
@@ -874,10 +1116,7 @@ def _check_tickers(
     *,
     date_col: str,
 ) -> list[str]:
-    if not isinstance(prices, pd.DataFrame):
-        raise TypeError("prices must be a pandas DataFrame")
-    if date_col not in prices.columns:
-        raise ValueError(f"prices must contain {date_col!r}")
+    kind = _price_kind(prices, date_col=date_col)
 
     if isinstance(tickers, str):
         result = [tickers]
@@ -889,10 +1128,17 @@ def _check_tickers(
     if not all(isinstance(t, str) and t for t in result):
         raise ValueError("tickers must be non-empty strings")
 
+    if kind == "close":
+        available = set(prices.columns) - {date_col}
+    else:
+        available = set(
+            prices.index.get_level_values(1).unique()
+        )
+
     missing = [
         ticker
         for ticker in result
-        if ticker not in prices.columns
+        if ticker not in available
     ]
     if missing:
         raise ValueError(f"tickers missing from prices: {missing}")
