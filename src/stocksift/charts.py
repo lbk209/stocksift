@@ -27,8 +27,11 @@ __all__ = [
 _INDICATOR_ORDER = ("ma", "bb", "rsi", "ichimoku")
 _INDICATORS = set(_INDICATOR_ORDER)
 
-_CONTROL_GROUP_SPACING = 24
+_CONTROL_GROUP_SPACING = 12
 _INDICATOR_SPACING = 6
+_CONTROL_HEIGHT =  "30px"
+
+_PERIOD_OPTIONS = ("3M", "6M", "1Y", "3Y", "ALL")
 
 
 def plot_price_chart(
@@ -38,6 +41,7 @@ def plot_price_chart(
     ticker_names: Mapping[str, str] | None = None,
     date_col: str = "date",
     freq: str = "D",
+    period: str = "ALL",
     indicators: Iterable[str] = ("ma", "bb", "rsi", "ichimoku"),
     visible_indicators: Iterable[str] = ("ma", "bb", "rsi"),
     ma_windows: Sequence[int] = (20, 60),
@@ -56,10 +60,11 @@ def plot_price_chart(
     RSI is visible by default. MA, Bollinger, RSI, and approximate Ichimoku
     share ``indicator_line_width``; the close price uses ``price_line_width``.
 
-    The Plotly range selector only changes the visible x-range.
-    It does not recalculate technical indicators.
+    Technical indicators are calculated from the full available history,
+    then the selected period is displayed.
     """
     freq = _check_freq(freq)
+    period = _check_period(period)
     indicators = _check_indicators(indicators)
     visible = _check_indicators(visible_indicators)
 
@@ -82,6 +87,7 @@ def plot_price_chart(
 
     close = _price_series(prices, ticker, date_col=date_col)
     data = _price_periods(close, freq=freq)
+    view = _slice_period(data, period=period)
     has_rsi = "rsi" in indicators
 
     fig = (
@@ -98,8 +104,8 @@ def plot_price_chart(
 
     fig.add_trace(
         go.Scatter(
-            x=data.index,
-            y=data["close"],
+            x=view.index,
+            y=view["close"],
             mode="lines",
             name="Close",
             line=dict(width=price_line_width),
@@ -112,6 +118,7 @@ def plot_price_chart(
         state = _visibility("ma", visible)
         for window in ma_windows:
             values = data["close"].rolling(window).mean()
+            values = values.loc[view.index]
             fig.add_trace(
                 go.Scatter(
                     x=values.index,
@@ -132,6 +139,7 @@ def plot_price_chart(
             window=bb_window,
             n_std=float(bb_std),
         )
+        bb = bb.loc[view.index]
 
         fig.add_trace(
             go.Scatter(
@@ -169,6 +177,7 @@ def plot_price_chart(
             windows=ichimoku_windows,
             displacement=ichimoku_displacement,
         )
+        ichi = ichi.loc[view.index]
 
         traces = [
             ("tenkan", "Approx. Ichimoku", True, None),
@@ -197,6 +206,7 @@ def plot_price_chart(
     if has_rsi:
         state = _visibility("rsi", visible)
         rsi = _rsi(data["close"], window=rsi_window)
+        rsi = rsi.loc[view.index]
 
         fig.add_trace(
             go.Scatter(
@@ -259,11 +269,6 @@ def plot_price_chart(
     )
     fig.update_yaxes(title_text="Price", row=1, col=1)
 
-    _add_time_controls(
-        fig,
-        row=2 if has_rsi else 1,
-        col=1,
-    )
 
     return fig
 
@@ -275,17 +280,19 @@ def browse_price_chart(
     ticker_names: Mapping[str, str] | None = None,
     date_col: str = "date",
     freq: str = "D",
+    period: str = "ALL",
     **plot_kwargs: Any,
 ) -> None:
     """Browse technical charts with persistent indicator checkboxes.
 
-    Ticker, frequency, and indicator controls are treated as three UI groups.
-    The spacing between those groups is equal. Indicator checkbox state is
-    preserved when the ticker or frequency changes.
+    Ticker, frequency, indicator, and period controls are separate UI groups.
+    The spacing between groups is equal. Indicator checkbox state is preserved
+    when the ticker, frequency, or period changes.
     """
     widgets, display, clear_output = _notebook_tools()
     tickers = _check_tickers(prices, tickers, date_col=date_col)
     freq = _check_freq(freq)
+    period = _check_period(period)
 
     available_indicators = _check_indicators(
         plot_kwargs.pop("indicators", _INDICATOR_ORDER)
@@ -319,6 +326,8 @@ def browse_price_chart(
         ],
         value=freq,
         description="",
+        layout=widgets.Layout(width="auto"),
+        style={"button_width": "auto"},
     )
 
     indicator_labels = {
@@ -347,7 +356,18 @@ def browse_price_chart(
         list(indicator_checks.values()),
         layout=widgets.Layout(
             align_items="center",
+            height=_CONTROL_HEIGHT,
+            border="1px solid #ccc",
+            padding="0 6px",
         ),
+    )
+
+    period_selector = widgets.ToggleButtons(
+        options=_PERIOD_OPTIONS,
+        value=period,
+        description="",
+        layout=widgets.Layout(width="auto"),
+        style={"button_width": "auto"},
     )
 
     group_margin = f"0 {_CONTROL_GROUP_SPACING}px 0 0"
@@ -366,6 +386,12 @@ def browse_price_chart(
     )
     indicator_group = widgets.Box(
         [indicator_controls],
+        layout=widgets.Layout(
+            margin=group_margin,
+        ),
+    )
+    period_group = widgets.Box(
+        [period_selector],
     )
 
     controls = widgets.HBox(
@@ -373,6 +399,7 @@ def browse_price_chart(
             ticker_group,
             freq_group,
             indicator_group,
+            period_group,
         ],
         layout=widgets.Layout(
             align_items="center",
@@ -399,6 +426,7 @@ def browse_price_chart(
                 ticker_names=ticker_names,
                 date_col=date_col,
                 freq=freq_selector.value,
+                period=period_selector.value,
                 indicators=selected_indicators,
                 visible_indicators=selected_indicators,
                 **plot_kwargs,
@@ -406,6 +434,7 @@ def browse_price_chart(
 
     ticker_selector.observe(render, names="value")
     freq_selector.observe(render, names="value")
+    period_selector.observe(render, names="value")
 
     for checkbox in indicator_checks.values():
         checkbox.observe(render, names="value")
@@ -421,13 +450,15 @@ def plot_price_comparison(
     ticker_names: Mapping[str, str] | None = None,
     date_col: str = "date",
     freq: str = "D",
+    period: str = "ALL",
     base: float | None = 100.0,
     price_line_width: float = 2.0,
     width: int | None = None,
     height: int | None = None,
 ) -> go.Figure:
-    """Compare tickers using raw or normalized closes from a common start date."""
+    """Compare tickers over a selected period from a common valid start date."""
     freq = _check_freq(freq)
+    period = _check_period(period)
     tickers = _check_tickers(prices, tickers, date_col=date_col)
     _check_positive_number(price_line_width, "price_line_width")
     _check_figure_size(width, "width")
@@ -455,6 +486,7 @@ def plot_price_comparison(
     if data.empty:
         raise ValueError("no common valid dates for requested tickers")
 
+    data = _slice_period(data, period=period)
     first = data.iloc[0]
     if (first <= 0).any():
         bad = first.index[first <= 0].tolist()
@@ -495,7 +527,6 @@ def plot_price_comparison(
         margin=dict(l=50, r=30, t=60, b=40),
     )
 
-    _add_time_controls(fig)
 
     return fig
 
@@ -507,6 +538,7 @@ def browse_price_comparison(
     ticker_names: Mapping[str, str] | None = None,
     date_col: str = "date",
     normalize: bool = True,
+    period: str = "ALL",
     base: float = 100.0,
     price_line_width: float = 2.0,
     width: int | None = None,
@@ -521,10 +553,12 @@ def browse_price_comparison(
     ``normalize`` controls the initial state of the Normalized/Raw UI toggle.
     Comparison browsing uses the default daily frequency; callers that need
     another frequency can call ``plot_price_comparison`` directly.
-    When normalized, ``base`` is used as the common starting value.
+    When normalized, ``base`` is applied at the first common valid date
+    within the selected period.
     """
     widgets, display, clear_output = _notebook_tools()
     tickers = _check_tickers(prices, tickers, date_col=date_col)
+    period = _check_period(period)
 
     if not isinstance(normalize, bool):
         raise TypeError("normalize must be a bool")
@@ -551,24 +585,42 @@ def browse_price_comparison(
         ],
         value=normalize,
         description="",
+        layout=widgets.Layout(width="auto"),
+        style={"button_width": "auto"},
+    )
+
+    period_selector = widgets.ToggleButtons(
+        options=_PERIOD_OPTIONS,
+        value=period,
+        description="",
+        layout=widgets.Layout(width="auto"),
+        style={"button_width": "auto"},
     )
     group_margin = f"0 {_CONTROL_GROUP_SPACING}px 0 0"
-    
+
     ticker_group = widgets.Box(
         [ticker_selector],
         layout=widgets.Layout(
             margin=group_margin,
         ),
     )
-    
+
     normalize_group = widgets.Box(
         [normalize_selector],
+        layout=widgets.Layout(
+            margin=group_margin,
+        ),
     )
-    
+
+    period_group = widgets.Box(
+        [period_selector],
+    )
+
     controls = widgets.HBox(
         [
             ticker_group,
             normalize_group,
+            period_group,
         ],
         layout=widgets.Layout(
             align_items="center",
@@ -591,6 +643,7 @@ def browse_price_comparison(
                 selected,
                 ticker_names=ticker_names,
                 date_col=date_col,
+                period=period_selector.value,
                 base=base if normalize_selector.value else None,
                 price_line_width=price_line_width,
                 width=width,
@@ -599,6 +652,7 @@ def browse_price_comparison(
 
     ticker_selector.observe(render, names="value")
     normalize_selector.observe(render, names="value")
+    period_selector.observe(render, names="value")
     render()
 
     display(widgets.VBox([controls, output]))
@@ -719,61 +773,49 @@ def _ichimoku(
     )
 
 
-def _add_time_controls(
-    fig: go.Figure,
+def _check_period(period: str) -> str:
+    period = str(period).upper()
+    if period not in _PERIOD_OPTIONS:
+        raise ValueError(
+            f"period must be one of {list(_PERIOD_OPTIONS)}"
+        )
+    return period
+
+
+def _period_start(
+    end: pd.Timestamp,
     *,
-    row: int | None = None,
-    col: int | None = None,
-) -> None:
-    """Add range buttons inside the upper-left of the main plot area."""
-    kwargs: dict[str, Any] = {
-        "rangeslider_visible": False,
-        "rangeselector": dict(
-            x=0.01,
-            y=0.99,
-            xanchor="left",
-            yanchor="top",
-            buttons=[
-                dict(
-                    count=3,
-                    label="3M",
-                    step="month",
-                    stepmode="backward",
-                ),
-                dict(
-                    count=6,
-                    label="6M",
-                    step="month",
-                    stepmode="backward",
-                ),
-                dict(
-                    count=1,
-                    label="1Y",
-                    step="year",
-                    stepmode="backward",
-                ),
-                dict(
-                    count=3,
-                    label="3Y",
-                    step="year",
-                    stepmode="backward",
-                ),
-                dict(
-                    label="ALL",
-                    step="all",
-                ),
-            ],
-        ),
+    period: str,
+) -> pd.Timestamp | None:
+    period = _check_period(period)
+
+    offsets = {
+        "3M": pd.DateOffset(months=3),
+        "6M": pd.DateOffset(months=6),
+        "1Y": pd.DateOffset(years=1),
+        "3Y": pd.DateOffset(years=3),
     }
 
-    if row is None or col is None:
-        fig.update_xaxes(**kwargs)
-    else:
-        fig.update_xaxes(
-            **kwargs,
-            row=row,
-            col=col,
-        )
+    if period == "ALL":
+        return None
+
+    return end - offsets[period]
+
+
+def _slice_period(
+    data: pd.Series | pd.DataFrame,
+    *,
+    period: str,
+) -> pd.Series | pd.DataFrame:
+    if data.empty:
+        return data
+
+    start = _period_start(data.index.max(), period=period)
+    if start is None:
+        return data
+
+    return data.loc[data.index >= start]
+
 
 def _check_freq(freq: str) -> str:
     freq = str(freq).upper()
