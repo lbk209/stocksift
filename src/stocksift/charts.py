@@ -31,7 +31,11 @@ __all__ = [
     "browse_price_comparison",
 ]
 
+<<<<<<< HEAD
 _INDICATOR_ORDER = ("ma", "bb", "rsi", "ichimoku", "volume")
+=======
+_INDICATOR_ORDER = ("ma", "bb", "ichimoku", "volume", "rsi", "mfi", "atr")
+>>>>>>> d1aad7a (candlestick)
 _INDICATORS = set(_INDICATOR_ORDER)
 
 _OHLCV_COLUMNS = ("open", "high", "low", "close", "volume")
@@ -51,12 +55,22 @@ def plot_price_chart(
     date_col: str = "date",
     freq: str = "D",
     period: str = "ALL",
+<<<<<<< HEAD
     indicators: Iterable[str] = ("ma", "bb", "rsi", "ichimoku"),
     visible_indicators: Iterable[str] = ("ma", "bb", "rsi"),
+=======
+    indicators: Iterable[str] | None = None,
+    visible_indicators: Iterable[str] | None = None,
+>>>>>>> d1aad7a (candlestick)
     ma_windows: Sequence[int] = (20, 60),
     bb_window: int = 20,
     bb_std: float = 2.0,
     rsi_window: int = 14,
+<<<<<<< HEAD
+=======
+    atr_window: int = 14,
+    mfi_window: int = 14,
+>>>>>>> d1aad7a (candlestick)
     ichimoku_windows: tuple[int, int, int] = (9, 26, 52),
     ichimoku_displacement: int = 26,
     price_line_width: float = 2.0,
@@ -66,6 +80,7 @@ def plot_price_chart(
 ) -> go.Figure:
     """Return a technical chart for one ticker.
 
+<<<<<<< HEAD
     RSI is visible by default. MA, Bollinger, RSI, and Ichimoku share
     ``indicator_line_width``; the close price uses ``price_line_width``.
 
@@ -84,11 +99,48 @@ def plot_price_chart(
         raise ValueError(
             f"indicators unavailable for this price data: {sorted(unsupported)}"
         )
+=======
+    OHLCV input uses a candlestick chart; close-only input uses a close line.
+    MA and Volume are visible by default for OHLCV data, while close-only data
+    defaults to MA only. Bollinger, RSI, Ichimoku, ATR, and MFI are optional.
+
+    Technical indicators are calculated from the full available history,
+    then the selected period is displayed. Close-only input uses approximate
+    Ichimoku; OHLCV input uses actual high/low values.
+    """
+    freq = _check_freq(freq)
+    period = _check_period(period)
+    supported = _available_indicators(prices, date_col=date_col)
+
+    if indicators is None:
+        indicators = {"ma", "volume"} & supported
+    else:
+        indicators = _check_indicators(indicators)
+        unsupported = indicators - supported
+        if unsupported:
+            raise ValueError(
+                "indicators unavailable for this price data: "
+                f"{sorted(unsupported)}"
+            )
+
+    if visible_indicators is None:
+        visible = set(indicators)
+    else:
+        visible = _check_indicators(visible_indicators)
+
+>>>>>>> d1aad7a (candlestick)
     if not visible <= indicators:
         raise ValueError("visible_indicators must be included in indicators")
 
     _check_windows(ma_windows, "ma_windows")
+<<<<<<< HEAD
     _check_windows((bb_window, rsi_window), "indicator windows")
+=======
+    _check_windows(
+        (bb_window, rsi_window, atr_window, mfi_window),
+        "indicator windows",
+    )
+>>>>>>> d1aad7a (candlestick)
     _check_windows(ichimoku_windows, "ichimoku_windows")
     _check_windows((ichimoku_displacement,), "ichimoku_displacement")
     _check_positive_number(price_line_width, "price_line_width")
@@ -111,6 +163,7 @@ def plot_price_chart(
     view = _slice_period(data, period=period)
 
     has_rsi = "rsi" in indicators
+<<<<<<< HEAD
     has_volume = "volume" in indicators
     extra_rows = int(has_rsi) + int(has_volume)
 
@@ -152,6 +205,88 @@ def plot_price_chart(
         col=1,
     )
 
+=======
+    has_mfi = "mfi" in indicators
+    has_atr = "atr" in indicators
+    has_volume = "volume" in indicators
+
+    extra_panels = (
+        int(has_rsi)
+        + int(has_mfi)
+        + int(has_atr)
+        + int(has_volume)
+    )
+    rows = 1 + extra_panels
+
+    if rows == 1:
+        fig = make_subplots(rows=1, cols=1)
+    else:
+        panel_height = 0.14
+        main_height = 1.0 - panel_height * extra_panels
+        fig = make_subplots(
+            rows=rows,
+            cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.025,
+            row_heights=[
+                main_height,
+                *([panel_height] * extra_panels),
+            ],
+        )
+
+    next_row = 2
+    rsi_row = None
+    mfi_row = None
+    atr_row = None
+    volume_row = None
+
+    if has_rsi:
+        rsi_row = next_row
+        next_row += 1
+    if has_mfi:
+        mfi_row = next_row
+        next_row += 1
+    if has_atr:
+        atr_row = next_row
+        next_row += 1
+    if has_volume:
+        volume_row = next_row
+
+    if price_kind == "ohlcv":
+        fig.add_trace(
+            go.Candlestick(
+                x=view.index,
+                open=view["open"],
+                high=view["high"],
+                low=view["low"],
+                close=view["close"],
+                name="OHLC",
+                increasing=dict(
+                    line=dict(color="red"),
+                    fillcolor="rgba(255, 0, 0, 0.35)",
+                ),
+                decreasing=dict(
+                    line=dict(color="blue"),
+                    fillcolor="rgba(0, 0, 255, 0.35)",
+                ),
+            ),
+            row=1,
+            col=1,
+        )
+    else:
+        fig.add_trace(
+            go.Scatter(
+                x=view.index,
+                y=view["close"],
+                mode="lines",
+                name="Close",
+                line=dict(width=price_line_width),
+            ),
+            row=1,
+            col=1,
+        )
+
+>>>>>>> d1aad7a (candlestick)
     if "ma" in indicators:
         state = _visibility("ma", visible)
         for window in ma_windows:
@@ -245,6 +380,29 @@ def plot_price_chart(
                 col=1,
             )
 
+<<<<<<< HEAD
+=======
+    if has_volume:
+        state = _visibility("volume", visible)
+        volume = view["volume"]
+
+        fig.add_trace(
+            go.Bar(
+                x=volume.index,
+                y=volume,
+                name="Volume",
+                visible=state,
+            ),
+            row=volume_row,
+            col=1,
+        )
+        fig.update_yaxes(
+            title_text="Volume",
+            row=volume_row,
+            col=1,
+        )
+
+>>>>>>> d1aad7a (candlestick)
     if has_rsi:
         state = _visibility("rsi", visible)
         rsi = _rsi(data["close"], window=rsi_window)
@@ -260,7 +418,11 @@ def plot_price_chart(
                 legendgroup="rsi",
                 visible=state,
             ),
+<<<<<<< HEAD
             row=2,
+=======
+            row=rsi_row,
+>>>>>>> d1aad7a (candlestick)
             col=1,
         )
 
@@ -291,6 +453,7 @@ def plot_price_chart(
             col=1,
         )
 
+<<<<<<< HEAD
     if has_volume:
         state = _visibility("volume", visible)
         volume = view["volume"]
@@ -311,16 +474,94 @@ def plot_price_chart(
             col=1,
         )
 
+=======
+    if has_mfi:
+        state = _visibility("mfi", visible)
+        mfi = _mfi(data, window=mfi_window)
+        mfi = mfi.loc[view.index]
+
+        fig.add_trace(
+            go.Scatter(
+                x=mfi.index,
+                y=mfi,
+                mode="lines",
+                name=f"MFI{mfi_window}",
+                line=dict(width=indicator_line_width),
+                legendgroup="mfi",
+                visible=state,
+            ),
+            row=mfi_row,
+            col=1,
+        )
+
+        for level in (80, 20):
+            fig.add_trace(
+                go.Scatter(
+                    x=mfi.index,
+                    y=[level] * len(mfi),
+                    mode="lines",
+                    line=dict(
+                        width=indicator_line_width,
+                        dash="dot",
+                    ),
+                    name=f"MFI {level}",
+                    legendgroup="mfi",
+                    showlegend=False,
+                    hoverinfo="skip",
+                    visible=state,
+                ),
+                row=mfi_row,
+                col=1,
+            )
+
+        fig.update_yaxes(
+            title_text="MFI",
+            range=[0, 100],
+            row=mfi_row,
+            col=1,
+        )
+
+    if has_atr:
+        state = _visibility("atr", visible)
+        atr = _atr(data, window=atr_window)
+        atr = atr.loc[view.index]
+
+        fig.add_trace(
+            go.Scatter(
+                x=atr.index,
+                y=atr,
+                mode="lines",
+                name=f"ATR{atr_window}",
+                line=dict(width=indicator_line_width),
+                legendgroup="atr",
+                visible=state,
+            ),
+            row=atr_row,
+            col=1,
+        )
+        
+        fig.update_yaxes(
+            title_text="ATR",
+            row=atr_row,
+            col=1,
+        )
+
+
+>>>>>>> d1aad7a (candlestick)
     label = _ticker_label(ticker, ticker_names)
     freq_label = "Daily" if freq == "D" else "Weekly"
 
     if height is None:
+<<<<<<< HEAD
         if has_rsi and has_volume:
             height = 840
         elif has_rsi or has_volume:
             height = 760
         else:
             height = 600
+=======
+        height = 600 + 110 * extra_panels
+>>>>>>> d1aad7a (candlestick)
 
     fig.update_layout(
         title=f"{label} — {freq_label}",
@@ -335,7 +576,11 @@ def plot_price_chart(
         margin=dict(l=50, r=30, t=60, b=40),
     )
     fig.update_yaxes(title_text="Price", row=1, col=1)
+<<<<<<< HEAD
 
+=======
+    fig.update_xaxes(rangeslider_visible=False)
+>>>>>>> d1aad7a (candlestick)
 
     return fig
 
@@ -378,12 +623,23 @@ def browse_price_chart(
                 f"{sorted(unsupported)}"
             )
 
+<<<<<<< HEAD
     initial_visible = _check_indicators(
         plot_kwargs.pop(
             "visible_indicators",
             ("ma", "bb", "rsi"),
         )
     )
+=======
+    requested_visible = plot_kwargs.pop(
+        "visible_indicators",
+        None,
+    )
+    if requested_visible is None:
+        initial_visible = {"ma", "volume"} & available_indicators
+    else:
+        initial_visible = _check_indicators(requested_visible)
+>>>>>>> d1aad7a (candlestick)
 
     if not initial_visible <= available_indicators:
         raise ValueError(
@@ -416,6 +672,11 @@ def browse_price_chart(
         "bb": "BB",
         "rsi": "RSI",
         "ichimoku": "Ichimoku",
+<<<<<<< HEAD
+=======
+        "atr": "ATR",
+        "mfi": "MFI",
+>>>>>>> d1aad7a (candlestick)
         "volume": "Volume",
     }
     indicator_checks = {}
@@ -980,6 +1241,66 @@ def _rsi(close: pd.Series, *, window: int) -> pd.Series:
     return rsi.mask((avg_loss == 0) & (avg_gain == 0), 50.0)
 
 
+<<<<<<< HEAD
+=======
+
+def _atr(
+    data: pd.DataFrame,
+    *,
+    window: int,
+) -> pd.Series:
+    high = data["high"]
+    low = data["low"]
+    close = data["close"]
+    prev_close = close.shift(1)
+
+    true_range = pd.concat(
+        [
+            high - low,
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+
+    return true_range.ewm(
+        alpha=1 / window,
+        adjust=False,
+        min_periods=window,
+    ).mean()
+
+
+def _mfi(
+    data: pd.DataFrame,
+    *,
+    window: int,
+) -> pd.Series:
+    typical = (
+        data["high"]
+        + data["low"]
+        + data["close"]
+    ) / 3
+    raw_flow = typical * data["volume"]
+
+    direction = typical.diff()
+    positive = raw_flow.where(direction > 0, 0.0)
+    negative = raw_flow.where(direction < 0, 0.0)
+
+    positive_sum = positive.rolling(window).sum()
+    negative_sum = negative.rolling(window).sum()
+
+    ratio = positive_sum / negative_sum
+    mfi = 100 - 100 / (1 + ratio)
+    mfi = mfi.mask(
+        (negative_sum == 0) & (positive_sum > 0),
+        100.0,
+    )
+    return mfi.mask(
+        (negative_sum == 0) & (positive_sum == 0),
+        50.0,
+    )
+
+>>>>>>> d1aad7a (candlestick)
 def _ichimoku(
     data: pd.DataFrame,
     *,
