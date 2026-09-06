@@ -55,37 +55,51 @@ RATIO_REQUIRED_KEYS = (
 
 
 def _resolve_files(
-    *files: str | Path,
+    files: str | Path | list[str | Path] | tuple[str | Path, ...],
+    *,
     data_root: str | Path | None = None,
 ) -> list[Path]:
-    """Resolve one ``*`` pattern or multiple explicit CSV files."""
-    if not files:
-        raise ValueError("at least two files are required for consolidation")
-
+    """Resolve one explicit file, one ``*`` pattern, or explicit file list."""
     root = Path.cwd() if data_root is None else Path(data_root).expanduser().resolve()
-    names = [str(file) for file in files]
+
+    if isinstance(files, (str, Path)):
+        names = [str(files)]
+        pattern = "*" in names[0]
+    elif isinstance(files, (list, tuple)):
+        if not files:
+            raise ValueError("at least one input file is required")
+        names = [str(file) for file in files]
+        pattern = False
+        if any("*" in name for name in names):
+            raise ValueError("wildcard patterns cannot be used in an explicit file list")
+    else:
+        raise TypeError("files must be a path, pattern, list, or tuple")
 
     if any(char in name for name in names for char in ("?", "[", "]")):
         raise ValueError("only '*' is supported as a wildcard")
 
-    if any("*" in name for name in names):
-        if len(files) != 1:
-            raise ValueError("a wildcard pattern cannot be mixed with explicit files")
+    if pattern:
         if Path(names[0]).expanduser().is_absolute():
             raise ValueError("wildcard patterns must be relative to data_root")
-        paths = [
-            path.resolve()
-            for path in root.glob(names[0])
-            if path.is_file() and path.suffix.lower() == ".csv"
-        ]
+        paths = sorted(
+            [
+                path.resolve()
+                for path in root.glob(names[0])
+                if path.is_file() and path.suffix.lower() == ".csv"
+            ],
+            key=lambda path: path.name,
+        )
         if not paths:
             raise FileNotFoundError(
                 f"no CSV files match pattern {names[0]!r} under {root}"
             )
+        print(f"INFO: matched {len(paths)} files:")
+        for path in paths:
+            print(f"  - {path.name}")
     else:
         paths = []
-        for file in files:
-            path = Path(file).expanduser()
+        for name in names:
+            path = Path(name).expanduser()
             path = path if path.is_absolute() else root / path
             path = path.resolve()
             if not path.is_file():
@@ -96,11 +110,27 @@ def _resolve_files(
 
     if len(set(paths)) != len(paths):
         raise ValueError("duplicate input files are not allowed")
-    if len(paths) < 2:
-        raise ValueError(
-            f"at least two files are required for consolidation; found {len(paths)}"
-        )
+
     return paths
+
+
+def _overlap_dates(
+    old_dates: pd.Series | pd.Index,
+    new_dates: pd.Series | pd.Index,
+) -> tuple[pd.DatetimeIndex, pd.Timestamp, pd.Timestamp]:
+    """Return common dates within the old-end/new-start boundary."""
+    old_dates = pd.DatetimeIndex(pd.Index(old_dates).dropna().unique()).sort_values()
+    new_dates = pd.DatetimeIndex(pd.Index(new_dates).dropna().unique()).sort_values()
+
+    old_end = old_dates.max()
+    new_start = new_dates.min()
+
+    if new_start > old_end:
+        return pd.DatetimeIndex([]), old_end, new_start
+
+    overlap = old_dates.intersection(new_dates).sort_values()
+    overlap = overlap[(overlap >= new_start) & (overlap <= old_end)]
+    return overlap, old_end, new_start
 
 
 def _consolidate_long(
@@ -150,77 +180,148 @@ def _consolidate_long(
         )
 
     prepared.sort(key=lambda item: item[3])
-    previous_path, current, _, _ = prepared[0]
+    current = prepared[0][1].copy()
     keys = [ticker_col, date_col]
 
-    for new_path, newer, new_start, _ in prepared[1:]:
-        old_end = current[date_col].max()
-        overlap_dates = (
-            pd.Index(current[date_col].unique())
-            .intersection(pd.Index(newer[date_col].unique()))
-            .sort_values()
+    for i in range(1, len(prepared)):
+        previous_path, previous, _, _ = prepared[i - 1]
+        new_path, newer, _, _ = prepared[i]
+
+        file_overlap, old_end, new_start = _overlap_dates(
+            previous[date_col],
+            newer[date_col],
         )
-        n_overlap = len(overlap_dates)
-        if n_overlap < min_check_dates:
+        n_file_overlap = len(file_overlap)
+        if n_file_overlap < min_check_dates:
             raise ValueError(
-                f"insufficient overlap between {previous_path.name} and "
-                f"{new_path.name}: {n_overlap} common dates; at least "
+                f"insufficient file overlap between {previous_path.name} and "
+                f"{new_path.name}: {n_file_overlap} common dates; at least "
                 f"{min_check_dates} required "
                 f"(old_end={old_end.date()}, new_start={new_start.date()})"
             )
 
-        n_check = min(n_overlap, max_check_dates)
-        check_dates = overlap_dates[-n_check:]
-        left = current.loc[current[date_col].isin(check_dates), keys + value_cols]
-        right = newer.loc[newer[date_col].isin(check_dates), keys + value_cols]
-        compared = left.merge(right, on=keys, suffixes=("_old", "_new"))
+        old_tickers = set(current[ticker_col].dropna())
+        new_tickers = set(newer[ticker_col].dropna())
+        common_tickers = sorted(old_tickers & new_tickers)
 
-        n_compared = n_failed = 0
-        for column in value_cols:
-            old = pd.to_numeric(compared[f"{column}_old"], errors="raise").to_numpy(float)
-            new = pd.to_numeric(compared[f"{column}_new"], errors="raise").to_numpy(float)
-            valid = np.isfinite(old) & np.isfinite(new)
-            old, new = old[valid], new[valid]
-            if not len(old):
-                continue
-            scale = np.maximum(np.abs(old), np.abs(new))
-            rel_diff = np.divide(
-                np.abs(new - old),
-                scale,
-                out=np.zeros_like(scale),
-                where=scale != 0,
-            )
-            n_compared += len(rel_diff)
-            n_failed += int((rel_diff > tolerance).sum())
-
-        if not n_compared:
+        if not common_tickers:
             raise ValueError(
-                f"no comparable values in overlap between {previous_path.name} "
-                f"and {new_path.name}"
+                f"no common tickers between {previous_path.name} and {new_path.name}"
             )
 
-        if n_failed:
-            print(
+        insufficient_tickers = set()
+        failed_tickers = set()
+        no_comparable_tickers = set()
+        n_compared = 0
+        n_failed = 0
+
+        for ticker in common_tickers:
+            old_ticker = current.loc[current[ticker_col] == ticker]
+            new_ticker = newer.loc[newer[ticker_col] == ticker]
+            ticker_overlap, _, _ = _overlap_dates(
+                old_ticker[date_col],
+                new_ticker[date_col],
+            )
+
+            if len(ticker_overlap) < min_check_dates:
+                insufficient_tickers.add(ticker)
+                continue
+
+            n_check = min(len(ticker_overlap), max_check_dates)
+            check_dates = ticker_overlap[-n_check:]
+            left = old_ticker.loc[
+                old_ticker[date_col].isin(check_dates),
+                keys + value_cols,
+            ]
+            right = new_ticker.loc[
+                new_ticker[date_col].isin(check_dates),
+                keys + value_cols,
+            ]
+            compared = left.merge(
+                right,
+                on=keys,
+                suffixes=("_old", "_new"),
+            )
+
+            ticker_compared = 0
+            ticker_failed = 0
+            for column in value_cols:
+                old = pd.to_numeric(
+                    compared[f"{column}_old"],
+                    errors="raise",
+                ).to_numpy(float)
+                new = pd.to_numeric(
+                    compared[f"{column}_new"],
+                    errors="raise",
+                ).to_numpy(float)
+                valid = np.isfinite(old) & np.isfinite(new)
+                old, new = old[valid], new[valid]
+                if not len(old):
+                    continue
+
+                scale = np.maximum(np.abs(old), np.abs(new))
+                rel_diff = np.divide(
+                    np.abs(new - old),
+                    scale,
+                    out=np.zeros_like(scale),
+                    where=scale != 0,
+                )
+                ticker_compared += len(rel_diff)
+                ticker_failed += int((rel_diff > tolerance).sum())
+
+            if not ticker_compared:
+                no_comparable_tickers.add(ticker)
+                continue
+
+            n_compared += ticker_compared
+            n_failed += ticker_failed
+            if ticker_failed:
+                failed_tickers.add(ticker)
+
+        restart_tickers = (
+            insufficient_tickers
+            | failed_tickers
+            | no_comparable_tickers
+        )
+
+        if restart_tickers:
+            details = [
+                f"tolerance={len(failed_tickers)}",
+                f"overlap={len(insufficient_tickers)}",
+            ]
+            if no_comparable_tickers:
+                details.append(f"no_comparable={len(no_comparable_tickers)}")
+
+            message = (
                 f"WARNING: {previous_path.name} -> {new_path.name}: "
                 f"old_end={old_end.date()}, new_start={new_start.date()}; "
-                f"{n_failed}/{n_compared} values exceed tolerance "
-                f"({n_failed / n_compared:.2%}). Older history discarded; "
-                f"restart={new_start.date()}."
+                f"file_overlap={n_file_overlap} dates; "
+                f"{len(restart_tickers)}/{len(common_tickers)} common tickers "
+                f"restarted ({', '.join(details)})"
             )
-            current = newer.copy()
+            if n_compared:
+                message += (
+                    f"; {n_failed}/{n_compared} compared values exceed tolerance "
+                    f"({n_failed / n_compared:.2%})"
+                )
+            print(message + ".")
         else:
             print(
                 f"INFO: {previous_path.name} -> {new_path.name}: "
                 f"old_end={old_end.date()}, new_start={new_start.date()}; "
-                f"overlap={n_overlap} dates, checked={n_check}, "
+                f"file_overlap={n_file_overlap} dates; "
+                f"{len(common_tickers)} common tickers checked, "
                 f"compared={n_compared} values."
             )
-            current = (
-                pd.concat([current, newer], ignore_index=True)
-                .sort_values(keys)
-                .drop_duplicates(keys, keep="last")
-            )
-        previous_path = new_path
+
+        old_keep = current.loc[
+            ~current[ticker_col].isin(restart_tickers)
+        ]
+        current = (
+            pd.concat([old_keep, newer], ignore_index=True)
+            .sort_values(keys)
+            .drop_duplicates(keys, keep="last")
+        )
 
     return current.sort_values(keys).reset_index(drop=True)
 
@@ -246,8 +347,8 @@ class StockAssessment:
     def __init__(
         self,
         *,
-        price_csv: str | Path | None = None,
-        ratio_csv: str | Path | None = None,
+        price_csv: str | Path | list[str | Path] | tuple[str | Path, ...] | None = None,
+        ratio_csv: str | Path | list[str | Path] | tuple[str | Path, ...] | None = None,
         ticker_name_csv: str | Path | None = None,
         data_root: str | Path | None = None,
     ) -> None:
@@ -387,68 +488,40 @@ class StockAssessment:
     def load_inputs(
         self,
         *,
-        price_csv: str | Path,
-        ratio_csv: str | Path,
-        data_root: str | Path | None = None
+        price_csv: str | Path | list[str | Path] | tuple[str | Path, ...],
+        ratio_csv: str | Path | list[str | Path] | tuple[str | Path, ...],
+        data_root: str | Path | None = None,
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
-        """Load and store the CSV inputs described by the YAML catalog."""
-
-        data_root = (
-            Path.cwd()
-            if data_root is None
-            else Path(data_root).expanduser().resolve()
-        )
-        price_path = data_root / price_csv
-        ratio_path = data_root / ratio_csv
-
-        missing = []
-
-        if not price_path.is_file():
-            missing.append(
-                f"price data: {price_path}"
-            )
-
-        if not ratio_path.is_file():
-            missing.append(
-                f"ratio data: {ratio_path}"
-            )
-
-        if missing:
-            raise FileNotFoundError(
-                "Input data not found:\n"
-                + "\n".join(
-                    f"  - {item}"
-                    for item in missing
-                )
-                + f"\nData root: {data_root}"
-            )
-
-        price_date = self.price_cols["date"]
-        ratio_ticker = self.ratio_cols["ticker"]
-        ratio_date = self.ratio_cols["date"]
-
-        self.prices = pd.read_csv(
-            price_path,
-            dtype={
-                price_date: "string",
-            },
+        """Load and store price and ratio inputs, consolidating when needed."""
+        self.prices = self.consolidate_prices(
+            price_csv,
+            data_root=data_root,
         )
 
-        self.ratios = pd.read_csv(
-            ratio_path,
-            dtype={
-                ratio_ticker: "string",
-                ratio_date: "string",
-            },
+        self.ratios = self.consolidate_ratios(
+            ratio_csv,
+            data_root=data_root,
         )
 
         return self.prices, self.ratios
 
 
-    @classmethod
+    @staticmethod
+    def _save_result(
+        result: pd.DataFrame,
+        output: str | Path,
+        data_root: str | Path | None,
+    ) -> None:
+        root = Path.cwd() if data_root is None else Path(data_root).expanduser().resolve()
+        output_path = Path(output).expanduser()
+        output_path = output_path if output_path.is_absolute() else root / output_path
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        result.to_csv(output_path, index=False, date_format="%Y-%m-%d")
+
     def consolidate_ratios(
-        cls,
-        *files: str | Path,
+        self,
+        files: str | Path | list[str | Path] | tuple[str | Path, ...],
+        *,
         data_root: str | Path | None = None,
         min_check_dates: int = 10,
         max_check_dates: int = 20,
@@ -457,10 +530,9 @@ class StockAssessment:
         output: str | Path | None = None,
     ) -> pd.DataFrame:
         """Consolidate ratio CSV histories, preferring later-dated files."""
-        paths = _resolve_files(*files, data_root=data_root)
-        assessment = cls()
-        ticker_col = assessment.ratio_cols["ticker"]
-        date_col = assessment.ratio_cols["date"]
+        paths = _resolve_files(files, data_root=data_root)
+        ticker_col = self.ratio_cols["ticker"]
+        date_col = self.ratio_cols["date"]
 
         datasets = []
         first_columns = None
@@ -498,22 +570,14 @@ class StockAssessment:
             tolerance=tolerance,
         )[first_columns]
 
-        if output is not None and not save:
-            raise ValueError("output can be specified only when save=True")
-        if save:
-            if output is None:
-                raise ValueError("output is required when save=True")
-            root = Path.cwd() if data_root is None else Path(data_root).expanduser().resolve()
-            output_path = Path(output).expanduser()
-            output_path = output_path if output_path.is_absolute() else root / output_path
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            result.to_csv(output_path, index=False, date_format="%Y-%m-%d")
+        if save and output is not None:
+            self._save_result(result, output, data_root)
         return result
 
-    @classmethod
     def consolidate_prices(
-        cls,
-        *files: str | Path,
+        self,
+        files: str | Path | list[str | Path] | tuple[str | Path, ...],
+        *,
         data_root: str | Path | None = None,
         min_check_dates: int = 10,
         max_check_dates: int = 20,
@@ -522,9 +586,8 @@ class StockAssessment:
         output: str | Path | None = None,
     ) -> pd.DataFrame:
         """Consolidate wide price CSV histories through a shared long form."""
-        paths = _resolve_files(*files, data_root=data_root)
-        assessment = cls()
-        date_col = assessment.price_cols["date"]
+        paths = _resolve_files(files, data_root=data_root)
+        date_col = self.price_cols["date"]
         ticker_col, value_col = "ticker", "price"
         datasets = []
 
@@ -546,8 +609,6 @@ class StockAssessment:
                     "price file has duplicate ticker columns after normalization: "
                     f"{path.name}"
                 )
-            frame[date_col] = pd.to_datetime(frame[date_col], errors="raise")
-            frame = frame.sort_values(date_col).drop_duplicates(date_col, keep="last")
             long = frame.melt(
                 id_vars=[date_col],
                 var_name=ticker_col,
@@ -572,16 +633,8 @@ class StockAssessment:
         )
         result.columns.name = None
 
-        if output is not None and not save:
-            raise ValueError("output can be specified only when save=True")
-        if save:
-            if output is None:
-                raise ValueError("output is required when save=True")
-            root = Path.cwd() if data_root is None else Path(data_root).expanduser().resolve()
-            output_path = Path(output).expanduser()
-            output_path = output_path if output_path.is_absolute() else root / output_path
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            result.to_csv(output_path, index=False, date_format="%Y-%m-%d")
+        if save and output is not None:
+            self._save_result(result, output, data_root)
         return result
 
     
