@@ -447,6 +447,7 @@ def plot_price_chart(
     fig.update_layout(
         #title=f"{label} — {freq_label}",
         hovermode="x unified",
+        hoversubplots="axis",
         showlegend=True,
         legend=dict(
             itemclick=False,
@@ -456,6 +457,8 @@ def plot_price_chart(
         height=height,
         margin=dict(l=50, r=30, t=60, b=40),
     )
+    fig.update_traces(xaxis="x")
+
     fig.update_yaxes(title_text="Price", row=1, col=1)
     fig.update_xaxes(rangeslider_visible=False)
 
