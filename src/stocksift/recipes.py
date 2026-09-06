@@ -35,8 +35,10 @@ def _completed_months(start, end) -> int:
     return max(0, months)
 
 
-def _available_analysis_months(assessment) -> int | None:
-    """Return full months usable after the feature-history warm-up."""
+def _analysis_history(
+    assessment,
+) -> tuple[int, pd.Timestamp] | None:
+    """Return usable analysis months and earliest usable assessment date."""
     try:
         prices = assessment.prices
         ratios = assessment.ratios
@@ -68,17 +70,25 @@ def _available_analysis_months(assessment) -> int | None:
         price_dates.max(),
         ratio_dates.max(),
     )
-    history_months = _completed_months(
-        data_start,
-        data_end,
-    )
     required_months = getattr(
         assessment,
         "RECOMMENDED_HISTORY_MONTHS",
         13,
     )
+    earliest_usable_as_of = (
+        data_start
+        + pd.DateOffset(months=required_months)
+    )
+    available_months = (
+        _completed_months(
+            earliest_usable_as_of,
+            data_end,
+        )
+        if data_end >= earliest_usable_as_of
+        else 0
+    )
 
-    return max(0, history_months - required_months)
+    return available_months, earliest_usable_as_of
 
 
 def core_long_selection() -> list[SelectionPolicy]:
@@ -176,8 +186,9 @@ def evaluate_recipe(
         as_of=as_of,
     )
 
-    available_months = _available_analysis_months(assessment)
-    if available_months is not None:
+    analysis_history = _analysis_history(assessment)
+    if analysis_history is not None:
+        available_months, _ = analysis_history
         unavailable_horizons = [
             horizon
             for horizon in horizons
@@ -398,25 +409,21 @@ def selection_trajectory(
             stacklevel=2,
         )
 
-    available_months = _available_analysis_months(assessment)
+    analysis_history = _analysis_history(assessment)
     trajectory_start = pd.Timestamp(as_of_dates[0])
-    trajectory_end = pd.Timestamp(as_of_dates[-1])
-    requested_months = _completed_months(
-        trajectory_start,
-        trajectory_end,
-    )
 
-    if (
-        available_months is not None
-        and requested_months > available_months
-    ):
-        warnings.warn(
-            f"Requested trajectory spans approximately "
-            f"{requested_months} months, exceeding the approximately "
-            f"{available_months}-month usable historical analysis "
-            "window; results may be incomplete.",
-            stacklevel=2,
-        )
+    if analysis_history is not None:
+        _, earliest_usable_as_of = analysis_history
+
+        if trajectory_start < earliest_usable_as_of:
+            warnings.warn(
+                f"Requested trajectory starts on "
+                f"{trajectory_start.date().isoformat()}, before the "
+                f"earliest approximately usable assessment date "
+                f"{earliest_usable_as_of.date().isoformat()}; "
+                "results may be incomplete.",
+                stacklevel=2,
+            )
 
     ticker_col = policies[-1].ticker_col
     rank_col = getattr(
