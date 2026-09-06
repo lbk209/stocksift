@@ -1,7 +1,8 @@
 """Neutral stock assessment from price and ratio history.
 
-The module performs feature engineering only. It intentionally avoids feature
-aggregation, ranking into a final stock score, and buy/sell/trim decisions.
+The module performs input-history consolidation and feature engineering. It
+intentionally avoids feature aggregation, ranking into a final stock score,
+and buy/sell/trim decisions.
 
 Column mappings and generated-feature metadata live in ``assessment.yaml``.
 Calculation rules remain in Python.
@@ -51,6 +52,177 @@ RATIO_REQUIRED_KEYS = (
     RATIO_STRUCTURAL_KEYS
     + RATIO_CORE_FACTOR_KEYS
 )
+
+
+def _resolve_files(
+    *files: str | Path,
+    data_root: str | Path | None = None,
+) -> list[Path]:
+    """Resolve one ``*`` pattern or multiple explicit CSV files."""
+    if not files:
+        raise ValueError("at least two files are required for consolidation")
+
+    root = Path.cwd() if data_root is None else Path(data_root).expanduser().resolve()
+    names = [str(file) for file in files]
+
+    if any(char in name for name in names for char in ("?", "[", "]")):
+        raise ValueError("only '*' is supported as a wildcard")
+
+    if any("*" in name for name in names):
+        if len(files) != 1:
+            raise ValueError("a wildcard pattern cannot be mixed with explicit files")
+        if Path(names[0]).expanduser().is_absolute():
+            raise ValueError("wildcard patterns must be relative to data_root")
+        paths = [
+            path.resolve()
+            for path in root.glob(names[0])
+            if path.is_file() and path.suffix.lower() == ".csv"
+        ]
+        if not paths:
+            raise FileNotFoundError(
+                f"no CSV files match pattern {names[0]!r} under {root}"
+            )
+    else:
+        paths = []
+        for file in files:
+            path = Path(file).expanduser()
+            path = path if path.is_absolute() else root / path
+            path = path.resolve()
+            if not path.is_file():
+                raise FileNotFoundError(f"input file not found: {path}")
+            if path.suffix.lower() != ".csv":
+                raise ValueError(f"input file must be CSV: {path.name}")
+            paths.append(path)
+
+    if len(set(paths)) != len(paths):
+        raise ValueError("duplicate input files are not allowed")
+    if len(paths) < 2:
+        raise ValueError(
+            f"at least two files are required for consolidation; found {len(paths)}"
+        )
+    return paths
+
+
+def _consolidate_long(
+    datasets: list[tuple[Path, pd.DataFrame]],
+    *,
+    ticker_col: str,
+    date_col: str,
+    value_cols: list[str],
+    min_check_dates: int = 10,
+    max_check_dates: int = 20,
+    tolerance: float = 0.0,
+) -> pd.DataFrame:
+    """Consolidate normalized long histories after boundary consistency checks."""
+    if min_check_dates < 1:
+        raise ValueError("min_check_dates must be at least 1")
+    if max_check_dates < min_check_dates:
+        raise ValueError(
+            "max_check_dates must be greater than or equal to min_check_dates"
+        )
+    if tolerance < 0:
+        raise ValueError("tolerance must be non-negative")
+    if not value_cols:
+        raise ValueError("at least one value column is required")
+
+    prepared = []
+    for path, frame in datasets:
+        if frame.empty:
+            raise ValueError(f"input file contains no usable data: {path.name}")
+        data = frame.copy()
+        data[date_col] = pd.to_datetime(data[date_col], errors="raise")
+        data[ticker_col] = data[ticker_col].astype("string").str.zfill(6)
+        data = (
+            data.sort_values([ticker_col, date_col])
+            .drop_duplicates([ticker_col, date_col], keep="last")
+        )
+        prepared.append(
+            (path, data, data[date_col].min(), data[date_col].max())
+        )
+
+    max_dates = pd.Series([item[3] for item in prepared])
+    duplicated = max_dates[max_dates.duplicated(keep=False)]
+    if not duplicated.empty:
+        date = duplicated.iloc[0]
+        count = int((max_dates == date).sum())
+        raise ValueError(
+            f"multiple files have the same max date: {date.date()} ({count} files)"
+        )
+
+    prepared.sort(key=lambda item: item[3])
+    previous_path, current, _, _ = prepared[0]
+    keys = [ticker_col, date_col]
+
+    for new_path, newer, new_start, _ in prepared[1:]:
+        old_end = current[date_col].max()
+        overlap_dates = (
+            pd.Index(current[date_col].unique())
+            .intersection(pd.Index(newer[date_col].unique()))
+            .sort_values()
+        )
+        n_overlap = len(overlap_dates)
+        if n_overlap < min_check_dates:
+            raise ValueError(
+                f"insufficient overlap between {previous_path.name} and "
+                f"{new_path.name}: {n_overlap} common dates; at least "
+                f"{min_check_dates} required "
+                f"(old_end={old_end.date()}, new_start={new_start.date()})"
+            )
+
+        n_check = min(n_overlap, max_check_dates)
+        check_dates = overlap_dates[-n_check:]
+        left = current.loc[current[date_col].isin(check_dates), keys + value_cols]
+        right = newer.loc[newer[date_col].isin(check_dates), keys + value_cols]
+        compared = left.merge(right, on=keys, suffixes=("_old", "_new"))
+
+        n_compared = n_failed = 0
+        for column in value_cols:
+            old = pd.to_numeric(compared[f"{column}_old"], errors="raise").to_numpy(float)
+            new = pd.to_numeric(compared[f"{column}_new"], errors="raise").to_numpy(float)
+            valid = np.isfinite(old) & np.isfinite(new)
+            old, new = old[valid], new[valid]
+            if not len(old):
+                continue
+            scale = np.maximum(np.abs(old), np.abs(new))
+            rel_diff = np.divide(
+                np.abs(new - old),
+                scale,
+                out=np.zeros_like(scale),
+                where=scale != 0,
+            )
+            n_compared += len(rel_diff)
+            n_failed += int((rel_diff > tolerance).sum())
+
+        if not n_compared:
+            raise ValueError(
+                f"no comparable values in overlap between {previous_path.name} "
+                f"and {new_path.name}"
+            )
+
+        if n_failed:
+            print(
+                f"WARNING: {previous_path.name} -> {new_path.name}: "
+                f"old_end={old_end.date()}, new_start={new_start.date()}; "
+                f"{n_failed}/{n_compared} values exceed tolerance "
+                f"({n_failed / n_compared:.2%}). Older history discarded; "
+                f"restart={new_start.date()}."
+            )
+            current = newer.copy()
+        else:
+            print(
+                f"INFO: {previous_path.name} -> {new_path.name}: "
+                f"old_end={old_end.date()}, new_start={new_start.date()}; "
+                f"overlap={n_overlap} dates, checked={n_check}, "
+                f"compared={n_compared} values."
+            )
+            current = (
+                pd.concat([current, newer], ignore_index=True)
+                .sort_values(keys)
+                .drop_duplicates(keys, keep="last")
+            )
+        previous_path = new_path
+
+    return current.sort_values(keys).reset_index(drop=True)
 
 
 class StockAssessment:
@@ -271,6 +443,146 @@ class StockAssessment:
         )
 
         return self.prices, self.ratios
+
+
+    @classmethod
+    def consolidate_ratios(
+        cls,
+        *files: str | Path,
+        data_root: str | Path | None = None,
+        min_check_dates: int = 10,
+        max_check_dates: int = 20,
+        tolerance: float = 0.0,
+        save: bool = False,
+        output: str | Path | None = None,
+    ) -> pd.DataFrame:
+        """Consolidate ratio CSV histories, preferring later-dated files."""
+        paths = _resolve_files(*files, data_root=data_root)
+        assessment = cls()
+        ticker_col = assessment.ratio_cols["ticker"]
+        date_col = assessment.ratio_cols["date"]
+
+        datasets = []
+        first_columns = None
+        for path in paths:
+            frame = pd.read_csv(
+                path,
+                dtype={ticker_col: "string", date_col: "string"},
+            )
+            if not {ticker_col, date_col}.issubset(frame.columns):
+                raise ValueError(
+                    f"ratio file is missing ticker/date columns: {path.name}"
+                )
+            columns = list(frame.columns)
+            if first_columns is None:
+                first_columns = columns
+            elif set(columns) != set(first_columns):
+                raise ValueError(
+                    "ratio files must have identical columns: "
+                    f"{path.name} differs from the first file"
+                )
+            datasets.append((path, frame[first_columns]))
+
+        value_cols = [
+            column
+            for column in first_columns
+            if column not in {ticker_col, date_col}
+        ]
+        result = _consolidate_long(
+            datasets,
+            ticker_col=ticker_col,
+            date_col=date_col,
+            value_cols=value_cols,
+            min_check_dates=min_check_dates,
+            max_check_dates=max_check_dates,
+            tolerance=tolerance,
+        )[first_columns]
+
+        if output is not None and not save:
+            raise ValueError("output can be specified only when save=True")
+        if save:
+            if output is None:
+                raise ValueError("output is required when save=True")
+            root = Path.cwd() if data_root is None else Path(data_root).expanduser().resolve()
+            output_path = Path(output).expanduser()
+            output_path = output_path if output_path.is_absolute() else root / output_path
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            result.to_csv(output_path, index=False, date_format="%Y-%m-%d")
+        return result
+
+    @classmethod
+    def consolidate_prices(
+        cls,
+        *files: str | Path,
+        data_root: str | Path | None = None,
+        min_check_dates: int = 10,
+        max_check_dates: int = 20,
+        tolerance: float = 0.0,
+        save: bool = False,
+        output: str | Path | None = None,
+    ) -> pd.DataFrame:
+        """Consolidate wide price CSV histories through a shared long form."""
+        paths = _resolve_files(*files, data_root=data_root)
+        assessment = cls()
+        date_col = assessment.price_cols["date"]
+        ticker_col, value_col = "ticker", "price"
+        datasets = []
+
+        for path in paths:
+            frame = pd.read_csv(path, dtype={date_col: "string"})
+            if date_col not in frame.columns:
+                raise ValueError(
+                    f"price file is missing date column {date_col!r}: {path.name}"
+                )
+            frame = frame.rename(
+                columns={
+                    column: str(column).zfill(6)
+                    for column in frame.columns
+                    if column != date_col
+                }
+            )
+            if frame.columns.duplicated().any():
+                raise ValueError(
+                    "price file has duplicate ticker columns after normalization: "
+                    f"{path.name}"
+                )
+            frame[date_col] = pd.to_datetime(frame[date_col], errors="raise")
+            frame = frame.sort_values(date_col).drop_duplicates(date_col, keep="last")
+            long = frame.melt(
+                id_vars=[date_col],
+                var_name=ticker_col,
+                value_name=value_col,
+            ).dropna(subset=[value_col])
+            datasets.append((path, long))
+
+        long_result = _consolidate_long(
+            datasets,
+            ticker_col=ticker_col,
+            date_col=date_col,
+            value_cols=[value_col],
+            min_check_dates=min_check_dates,
+            max_check_dates=max_check_dates,
+            tolerance=tolerance,
+        )
+        result = (
+            long_result.pivot(index=date_col, columns=ticker_col, values=value_col)
+            .sort_index()
+            .sort_index(axis=1)
+            .reset_index()
+        )
+        result.columns.name = None
+
+        if output is not None and not save:
+            raise ValueError("output can be specified only when save=True")
+        if save:
+            if output is None:
+                raise ValueError("output is required when save=True")
+            root = Path.cwd() if data_root is None else Path(data_root).expanduser().resolve()
+            output_path = Path(output).expanduser()
+            output_path = output_path if output_path.is_absolute() else root / output_path
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            result.to_csv(output_path, index=False, date_format="%Y-%m-%d")
+        return result
 
     
     def load_ticker_names(
