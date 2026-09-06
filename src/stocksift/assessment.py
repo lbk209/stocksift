@@ -333,21 +333,6 @@ class StockAssessment:
         ratio_date_col = rc["date"]
         ticker_col = rc["ticker"]
 
-        common_tickers = sorted(
-            (
-                set(p.columns)
-                - {price_date_col}
-            )
-            & set(
-                r[ticker_col].dropna()
-            )
-        )
-
-        if not common_tickers:
-            raise ValueError(
-                "prices and ratios have no common tickers"
-            )
-
         latest_common_date = min(
             p[price_date_col].max(),
             r[ratio_date_col].max(),
@@ -377,6 +362,51 @@ class StockAssessment:
             )
 
         as_of_ts = available_ratio_dates.max()
+
+        # Use only tickers that are active at the assessment date.
+        available_price_dates = p.loc[
+            p[price_date_col] <= as_of_ts,
+            price_date_col,
+        ]
+        
+        if available_price_dates.empty:
+            raise ValueError(
+                "prices contain no data on or before "
+                f"{as_of_ts.date()}"
+            )
+        
+        price_as_of_ts = available_price_dates.max()
+        
+        ratio_tickers = set(
+            r.loc[
+                r[ratio_date_col] == as_of_ts,
+                ticker_col,
+            ].dropna()
+        )
+        
+        price_row = (
+            p.loc[
+                p[price_date_col] == price_as_of_ts
+            ]
+            .iloc[-1]
+            .drop(labels=price_date_col)
+        )
+        
+        price_tickers = set(
+            price_row.index[
+                price_row.notna()
+            ]
+        )
+        
+        common_tickers = sorted(
+            ratio_tickers & price_tickers
+        )
+        
+        if not common_tickers:
+            raise ValueError(
+                "prices and ratios have no common tickers "
+                f"at as_of_date {as_of_ts.date()}"
+            )
 
         if print_msg:
             data_start = max(
