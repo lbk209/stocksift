@@ -142,6 +142,7 @@ def _consolidate_long(
     min_check_dates: int = 10,
     max_check_dates: int = 20,
     tolerance: float = 0.0,
+    failure_log: list[dict] | None = None,
 ) -> pd.DataFrame:
     """Consolidate normalized long histories after boundary consistency checks."""
     if min_check_dates < 1:
@@ -154,6 +155,8 @@ def _consolidate_long(
         raise ValueError("tolerance must be non-negative")
     if not value_cols:
         raise ValueError("at least one value column is required")
+    if failure_log is None:
+        failure_log = []
 
     prepared = []
     for path, frame in datasets:
@@ -212,19 +215,40 @@ def _consolidate_long(
         insufficient_tickers = set()
         failed_tickers = set()
         no_comparable_tickers = set()
-        n_compared = 0
-        n_failed = 0
 
         for ticker in common_tickers:
             old_ticker = current.loc[current[ticker_col] == ticker]
             new_ticker = newer.loc[newer[ticker_col] == ticker]
-            ticker_overlap, _, _ = _overlap_dates(
+            ticker_overlap, ticker_old_end, ticker_new_start = _overlap_dates(
                 old_ticker[date_col],
                 new_ticker[date_col],
             )
 
+            common_details = {
+                "ticker": ticker,
+                "previous_file": previous_path.name,
+                "new_file": new_path.name,
+                "file_old_end": old_end.date().isoformat(),
+                "file_new_start": new_start.date().isoformat(),
+                "file_overlap_dates": n_file_overlap,
+                "ticker_old_end": ticker_old_end.date().isoformat(),
+                "ticker_new_start": ticker_new_start.date().isoformat(),
+                "ticker_overlap_dates": len(ticker_overlap),
+                "min_check_dates": min_check_dates,
+                "max_check_dates": max_check_dates,
+                "tolerance": tolerance,
+            }
+
             if len(ticker_overlap) < min_check_dates:
                 insufficient_tickers.add(ticker)
+                failure_log.append({
+                    **common_details,
+                    "reason": "insufficient_overlap",
+                    "checked_dates": 0,
+                    "compared_values": 0,
+                    "failed_values": 0,
+                    "failed_columns": {},
+                })
                 continue
 
             n_check = min(len(ticker_overlap), max_check_dates)
@@ -245,6 +269,7 @@ def _consolidate_long(
 
             ticker_compared = 0
             ticker_failed = 0
+            failed_columns = {}
             for column in value_cols:
                 old = pd.to_numeric(
                     compared[f"{column}_old"],
@@ -266,17 +291,35 @@ def _consolidate_long(
                     out=np.zeros_like(scale),
                     where=scale != 0,
                 )
+                column_failed = int((rel_diff > tolerance).sum())
                 ticker_compared += len(rel_diff)
-                ticker_failed += int((rel_diff > tolerance).sum())
+                ticker_failed += column_failed
+                if column_failed:
+                    failed_columns[column] = column_failed
 
             if not ticker_compared:
                 no_comparable_tickers.add(ticker)
+                failure_log.append({
+                    **common_details,
+                    "reason": "no_comparable",
+                    "checked_dates": n_check,
+                    "compared_values": 0,
+                    "failed_values": 0,
+                    "failed_columns": {},
+                })
                 continue
 
-            n_compared += ticker_compared
-            n_failed += ticker_failed
             if ticker_failed:
                 failed_tickers.add(ticker)
+                failure_log.append({
+                    **common_details,
+                    "reason": "tolerance",
+                    "checked_dates": n_check,
+                    "compared_values": ticker_compared,
+                    "failed_values": ticker_failed,
+                    "failed_ratio": ticker_failed / ticker_compared,
+                    "failed_columns": failed_columns,
+                })
 
         restart_tickers = (
             insufficient_tickers
@@ -285,33 +328,15 @@ def _consolidate_long(
         )
 
         if restart_tickers:
-            details = [
-                f"tolerance={len(failed_tickers)}",
-                f"overlap={len(insufficient_tickers)}",
-            ]
-            if no_comparable_tickers:
-                details.append(f"no_comparable={len(no_comparable_tickers)}")
-
-            message = (
+            print(
                 f"WARNING: {previous_path.name} -> {new_path.name}: "
-                f"old_end={old_end.date()}, new_start={new_start.date()}; "
-                f"file_overlap={n_file_overlap} dates; "
                 f"{len(restart_tickers)}/{len(common_tickers)} common tickers "
-                f"restarted ({', '.join(details)})"
+                "restarted; older history discarded for those tickers."
             )
-            if n_compared:
-                message += (
-                    f"; {n_failed}/{n_compared} compared values exceed tolerance "
-                    f"({n_failed / n_compared:.2%})"
-                )
-            print(message + ".")
         else:
             print(
                 f"INFO: {previous_path.name} -> {new_path.name}: "
-                f"old_end={old_end.date()}, new_start={new_start.date()}; "
-                f"file_overlap={n_file_overlap} dates; "
-                f"{len(common_tickers)} common tickers checked, "
-                f"compared={n_compared} values."
+                f"{len(common_tickers)} common tickers merged successfully."
             )
 
         old_keep = current.loc[
@@ -372,6 +397,10 @@ class StockAssessment:
         self.prices: pd.DataFrame | None = None
         self.ratios: pd.DataFrame | None = None
         self.ticker_names = None
+        self.consolidation_failures: dict[str, list[dict]] = {
+            "prices": [],
+            "ratios": [],
+        }
     
         if (price_csv is None) != (ratio_csv is None):
             raise ValueError(
@@ -560,6 +589,8 @@ class StockAssessment:
             for column in first_columns
             if column not in {ticker_col, date_col}
         ]
+        failures: list[dict] = []
+        self.consolidation_failures["ratios"] = failures
         result = _consolidate_long(
             datasets,
             ticker_col=ticker_col,
@@ -568,6 +599,7 @@ class StockAssessment:
             min_check_dates=min_check_dates,
             max_check_dates=max_check_dates,
             tolerance=tolerance,
+            failure_log=failures,
         )[first_columns]
 
         if save and output is not None:
@@ -616,6 +648,8 @@ class StockAssessment:
             ).dropna(subset=[value_col])
             datasets.append((path, long))
 
+        failures: list[dict] = []
+        self.consolidation_failures["prices"] = failures
         long_result = _consolidate_long(
             datasets,
             ticker_col=ticker_col,
@@ -624,6 +658,7 @@ class StockAssessment:
             min_check_dates=min_check_dates,
             max_check_dates=max_check_dates,
             tolerance=tolerance,
+            failure_log=failures,
         )
         result = (
             long_result.pivot(index=date_col, columns=ticker_col, values=value_col)
