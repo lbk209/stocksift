@@ -530,7 +530,8 @@ def selection_trajectory(
     color_map = {
         ticker: (
             f"hsl("
-            f"{round(i * 360 / max(len(latest_tickers), 1))}, "
+            #f"{round(i * 360 / max(len(latest_tickers), 1))}, "
+            f"{round(i * 180 / max(len(latest_tickers) - 1, 1))}, "
             f"55%, 85%)"
         )
         for i, ticker in enumerate(latest_tickers)
