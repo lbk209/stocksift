@@ -69,6 +69,7 @@ class StockAssessment:
     MOMENTUM_SHORT_MONTHS = 6
     MOMENTUM_LONG_MONTHS = 12
     VOLATILITY_DAYS = 60
+    RECOMMENDED_HISTORY_MONTHS = 13
 
     def __init__(
         self,
@@ -306,6 +307,8 @@ class StockAssessment:
         as_of: Optional[
             str | pd.Timestamp
         ] = None,
+        *,
+        print_msg: bool = True,
     ) -> pd.DataFrame:
         """Assess all tickers shared by the loaded price and ratio inputs.
 
@@ -374,6 +377,38 @@ class StockAssessment:
             )
 
         as_of_ts = available_ratio_dates.max()
+
+        if print_msg:
+            data_start = max(
+                p[price_date_col].min(),
+                r[ratio_date_col].min(),
+            )
+            history_months = (
+                (as_of_ts.year - data_start.year) * 12
+                + as_of_ts.month
+                - data_start.month
+                - (as_of_ts.day < data_start.day)
+            )
+            history_months = max(0, history_months)
+
+            if history_months < self.RECOMMENDED_HISTORY_MONTHS:
+                print(
+                    f"WARNING: Only {history_months} months of history "
+                    "are available; "
+                    f"{self.RECOMMENDED_HISTORY_MONTHS} months are "
+                    "recommended for complete feature generation."
+                )
+            else:
+                analysis_months = (
+                    history_months
+                    - self.RECOMMENDED_HISTORY_MONTHS
+                )
+                print(
+                    f"INFO: {history_months} months of history available; "
+                    f"approximately {analysis_months} months are usable "
+                    "for historical recipe evaluation or trajectory "
+                    "analysis."
+                )
 
         current = self._ratio_snapshot(
             r,

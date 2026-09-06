@@ -24,6 +24,73 @@ from .policy import (
 CORE_LONG_TOP_N = 10
 
 
+def _completed_months(start, end) -> int:
+    """Return completed calendar months between two timestamps."""
+    months = (
+        (end.year - start.year) * 12
+        + end.month
+        - start.month
+        - (end.day < start.day)
+    )
+    return max(0, months)
+
+
+def _analysis_history(
+    assessment,
+) -> tuple[int, pd.Timestamp] | None:
+    """Return usable analysis months and earliest usable assessment date."""
+    try:
+        prices = assessment.prices
+        ratios = assessment.ratios
+        price_date_col = assessment.price_cols["date"]
+        ratio_date_col = assessment.ratio_cols["date"]
+    except (AttributeError, KeyError, TypeError):
+        return None
+
+    if prices is None or ratios is None:
+        return None
+
+    price_dates = pd.to_datetime(
+        prices[price_date_col],
+        errors="raise",
+    ).dropna()
+    ratio_dates = pd.to_datetime(
+        ratios[ratio_date_col],
+        errors="raise",
+    ).dropna()
+
+    if price_dates.empty or ratio_dates.empty:
+        return None
+
+    data_start = max(
+        price_dates.min(),
+        ratio_dates.min(),
+    )
+    data_end = min(
+        price_dates.max(),
+        ratio_dates.max(),
+    )
+    required_months = getattr(
+        assessment,
+        "RECOMMENDED_HISTORY_MONTHS",
+        13,
+    )
+    earliest_usable_as_of = (
+        data_start
+        + pd.DateOffset(months=required_months)
+    )
+    available_months = (
+        _completed_months(
+            earliest_usable_as_of,
+            data_end,
+        )
+        if data_end >= earliest_usable_as_of
+        else 0
+    )
+
+    return available_months, earliest_usable_as_of
+
+
 def core_long_selection() -> list[SelectionPolicy]:
     """Return the default reusable long-selection recipe.
 
@@ -113,9 +180,32 @@ def evaluate_recipe(
 ) -> Any:
     """Assess, select, and evaluate a stock-selection recipe."""
 
+    horizons = tuple(horizons)
+
     features = assessment.assess(
         as_of=as_of,
     )
+
+    analysis_history = _analysis_history(assessment)
+    if analysis_history is not None:
+        available_months, _ = analysis_history
+        unavailable_horizons = [
+            horizon
+            for horizon in horizons
+            if (
+                isinstance(horizon, int)
+                and not isinstance(horizon, bool)
+                and horizon > available_months
+            )
+        ]
+
+        if unavailable_horizons:
+            warnings.warn(
+                f"Requested horizons {unavailable_horizons}M exceed the "
+                f"approximately {available_months}-month usable "
+                "historical analysis window.",
+                stacklevel=2,
+            )
 
     if policies is None:
         policies = core_long_selection()
@@ -319,6 +409,22 @@ def selection_trajectory(
             stacklevel=2,
         )
 
+    analysis_history = _analysis_history(assessment)
+    trajectory_start = pd.Timestamp(as_of_dates[0])
+
+    if analysis_history is not None:
+        _, earliest_usable_as_of = analysis_history
+
+        if trajectory_start < earliest_usable_as_of:
+            warnings.warn(
+                f"Requested trajectory starts on "
+                f"{trajectory_start.date().isoformat()}, before the "
+                f"earliest approximately usable assessment date "
+                f"{earliest_usable_as_of.date().isoformat()}; "
+                "results may be incomplete.",
+                stacklevel=2,
+            )
+
     ticker_col = policies[-1].ticker_col
     rank_col = getattr(
         policies[-1],
@@ -340,6 +446,7 @@ def selection_trajectory(
     ):
         features = assessment.assess(
             as_of=date,
+            print_msg=False,
         )
 
         selected = apply_selection(
