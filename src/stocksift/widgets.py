@@ -34,7 +34,8 @@ class LongSelectionWidget:
     already-eligible universe rather than define a separate eligibility set.
 
     ``policies`` always reflects the current widget choices and can be passed
-    directly to other selection/evaluation functions. ``select()`` additionally
+    directly to other selection/evaluation functions. ``info`` provides
+    display metadata for the current recipe. ``select()`` additionally
     requires a bound feature table.
     """
 
@@ -120,7 +121,7 @@ class LongSelectionWidget:
                 style=control_style,
                 layout=widgets.Layout(width="100px"),
             )
-        
+
         self.widget = widgets.HBox(
             [
                 self.filter_selector,
@@ -162,6 +163,28 @@ class LongSelectionWidget:
         }
 
     @property
+    def info(self) -> dict[str, object]:
+        """Return display metadata for the current selection recipe."""
+        filter_spec = LONG_FILTER_REGISTRY[self.filter]
+        strategy_spec = LONG_STRATEGY_REGISTRY[self.strategy]
+
+        return {
+            "label": (
+                f"{filter_spec['label']} + "
+                f"{strategy_spec['label']}"
+            ),
+            "filter": {
+                "label": filter_spec["label"],
+                "desc": filter_spec["desc"],
+            },
+            "strategy": {
+                "label": strategy_spec["label"],
+                "desc": strategy_spec["desc"],
+            },
+            "top_n": self.top_n,
+        }
+
+    @property
     def policies(self) -> list[SelectionPolicy]:
         """Build policies from the current widget choices."""
         return build_long_selection(
@@ -184,7 +207,7 @@ class LongSelectionWidget:
             raise ValueError(
                 "features is required to run selection"
             )
-            
+
         return apply_selection(
             self.features,
             policies=self.policies,
@@ -219,6 +242,7 @@ def long_selection_widget(
 
     controls = long_selection_widget()
     policies = controls.policies
+    info = controls.info
     """
     controls = LongSelectionWidget(
         features,

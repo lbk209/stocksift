@@ -42,6 +42,25 @@ _CONTROL_HEIGHT = "30px"
 
 _PERIOD_OPTIONS = ("3M", "6M", "1Y", "3Y", "ALL")
 
+# Main-panel indicator colors approximated from the supplied Naver chart.
+# Other subplot indicators intentionally keep Plotly's automatic colors.
+_MA_COLORS = {
+    5: "#58BF40",
+    20: "#EE4747",
+    60: "#F48416",
+    120: "#9E5CCD",
+}
+_BB_COLOR = "#FFC100"
+_BB_FILL_COLOR = "rgba(255, 193, 0, 0.10)"
+_ICHIMOKU_COLORS = {
+    "tenkan": "#FF66E6",
+    "kijun": "#00C8E8",
+    "senkou_a": "#3799EF",
+    "senkou_b": "#FF6B6F",
+    "chikou": "#828282",
+}
+_ICHIMOKU_FILL_COLOR = "rgba(255, 107, 111, 0.25)"
+
 
 def plot_price_chart(
     prices: pd.DataFrame,
@@ -53,7 +72,7 @@ def plot_price_chart(
     period: str = "ALL",
     indicators: Iterable[str] | None = None,
     visible_indicators: Iterable[str] | None = None,
-    ma_windows: Sequence[int] = (20, 60),
+    ma_windows: Sequence[int] = (5, 20, 60),
     bb_window: int = 20,
     bb_std: float = 2.0,
     rsi_window: int = 14,
@@ -217,7 +236,10 @@ def plot_price_chart(
                     y=values,
                     mode="lines",
                     name=f"MA{window}",
-                    line=dict(width=indicator_line_width),
+                    line=dict(
+                        width=indicator_line_width,
+                        color=_MA_COLORS.get(window),
+                    ),
                     visible=state,
                 ),
                 row=1,
@@ -239,7 +261,10 @@ def plot_price_chart(
                 y=bb["upper"],
                 mode="lines",
                 name=f"Bollinger ({bb_window}, {bb_std:g})",
-                line=dict(width=indicator_line_width),
+                line=dict(
+                    width=indicator_line_width,
+                    color=_BB_COLOR,
+                ),
                 legendgroup="bb",
                 visible=state,
             ),
@@ -252,10 +277,14 @@ def plot_price_chart(
                 y=bb["lower"],
                 mode="lines",
                 name="Bollinger lower",
-                line=dict(width=indicator_line_width),
+                line=dict(
+                    width=indicator_line_width,
+                    color=_BB_COLOR,
+                ),
                 legendgroup="bb",
                 showlegend=False,
                 fill="tonexty",
+                fillcolor=_BB_FILL_COLOR,
                 visible=state,
             ),
             row=1,
@@ -290,10 +319,18 @@ def plot_price_chart(
                     y=ichi[column],
                     mode="lines",
                     name=name,
-                    line=dict(width=indicator_line_width),
+                    line=dict(
+                        width=indicator_line_width,
+                        color=_ICHIMOKU_COLORS[column],
+                    ),
                     legendgroup="ichimoku",
                     showlegend=showlegend,
                     fill=fill,
+                    fillcolor=(
+                        _ICHIMOKU_FILL_COLOR
+                        if fill is not None
+                        else None
+                    ),
                     visible=state,
                 ),
                 row=1,
