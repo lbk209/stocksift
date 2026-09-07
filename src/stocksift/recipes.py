@@ -7,7 +7,6 @@ re-exports the selection evaluation utility so routine use can rely on
 
 from __future__ import annotations
 
-
 import warnings
 from typing import Any, Iterable, Sequence
 
@@ -15,13 +14,233 @@ import pandas as pd
 from tqdm.auto import tqdm
 
 from .policy import (
+    CORE_LONG_TOP_N,
+    DEFAULT_LONG_SCORE_GROUPS,
     LongEqualGroupScore,
+    LongGroupScore,
     LongThresholdFilter,
     SelectionPolicy,
     evaluate_selection,
 )
 
-CORE_LONG_TOP_N = 10
+
+# Initial filter presets for notebook validation. Strict intentionally keeps
+# the previous core filter thresholds, while Mild relaxes each tail guardrail.
+MILD_LONG_THRESHOLD_RULES = (
+    ("per_hist_pct", "<=", 90.0),
+    ("eps_growth_pct", ">=", 10.0),
+    ("momentum_12m_pct", ">=", 10.0),
+)
+
+STRICT_LONG_THRESHOLD_RULES = (
+    ("per_hist_pct", "<=", 80.0),
+    ("eps_growth_pct", ">=", 20.0),
+    ("momentum_12m_pct", ">=", 20.0),
+)
+
+
+# Group weights are intentionally distinct enough for the named strategies to
+# represent different ranking preferences rather than minor tuning variants.
+VALUE_LONG_GROUP_WEIGHTS = {
+    "valuation": 0.50,
+    "fundamentals": 0.30,
+    "momentum": 0.20,
+}
+
+MOMENTUM_LONG_GROUP_WEIGHTS = {
+    "valuation": 0.20,
+    "fundamentals": 0.20,
+    "momentum": 0.60,
+}
+
+FUNDAMENTAL_LONG_GROUP_WEIGHTS = {
+    "valuation": 0.25,
+    "fundamentals": 0.55,
+    "momentum": 0.20,
+}
+
+VALUE_MOMENTUM_LONG_GROUP_WEIGHTS = {
+    "valuation": 0.40,
+    "fundamentals": 0.20,
+    "momentum": 0.40,
+}
+
+
+def _weighted_group_rules() -> dict[str, dict[str, dict[str, object]]]:
+    """Convert the default group directions to LongGroupScore rule format."""
+    return {
+        group: {
+            feature: {
+                "direction": direction,
+                "weight": 1.0,
+            }
+            for feature, direction in feature_directions.items()
+        }
+        for group, feature_directions in DEFAULT_LONG_SCORE_GROUPS.items()
+    }
+
+
+def mild_long_filter() -> LongThresholdFilter:
+    """Return the loose long eligibility filter preset."""
+    return LongThresholdFilter(
+        rules=MILD_LONG_THRESHOLD_RULES,
+    )
+
+
+def strict_long_filter() -> LongThresholdFilter:
+    """Return the stricter long eligibility filter preset."""
+    return LongThresholdFilter(
+        rules=STRICT_LONG_THRESHOLD_RULES,
+    )
+
+
+def balanced_long_strategy(
+    *,
+    top_n: int | None = CORE_LONG_TOP_N,
+) -> LongEqualGroupScore:
+    """Rank valuation, fundamentals, and momentum with equal group weights."""
+    return LongEqualGroupScore(
+        top_n=top_n,
+    )
+
+
+def _weighted_long_strategy(
+    group_weights: dict[str, float],
+    *,
+    top_n: int | None,
+) -> LongGroupScore:
+    """Build a weighted-group long ranking strategy."""
+    return LongGroupScore(
+        rules=_weighted_group_rules(),
+        group_weights=group_weights,
+        top_n=top_n,
+    )
+
+
+def value_long_strategy(
+    *,
+    top_n: int | None = CORE_LONG_TOP_N,
+) -> LongGroupScore:
+    """Emphasize valuation while retaining fundamentals and momentum."""
+    return _weighted_long_strategy(
+        VALUE_LONG_GROUP_WEIGHTS,
+        top_n=top_n,
+    )
+
+
+def momentum_long_strategy(
+    *,
+    top_n: int | None = CORE_LONG_TOP_N,
+) -> LongGroupScore:
+    """Emphasize momentum while retaining valuation and fundamentals."""
+    return _weighted_long_strategy(
+        MOMENTUM_LONG_GROUP_WEIGHTS,
+        top_n=top_n,
+    )
+
+
+def fundamental_long_strategy(
+    *,
+    top_n: int | None = CORE_LONG_TOP_N,
+) -> LongGroupScore:
+    """Emphasize fundamentals while retaining valuation and momentum."""
+    return _weighted_long_strategy(
+        FUNDAMENTAL_LONG_GROUP_WEIGHTS,
+        top_n=top_n,
+    )
+
+
+def value_momentum_long_strategy(
+    *,
+    top_n: int | None = CORE_LONG_TOP_N,
+) -> LongGroupScore:
+    """Jointly emphasize valuation and momentum."""
+    return _weighted_long_strategy(
+        VALUE_MOMENTUM_LONG_GROUP_WEIGHTS,
+        top_n=top_n,
+    )
+
+
+LONG_FILTER_REGISTRY = {
+    "mild": {
+        "label": "Mild",
+        "desc": "Loose tail guardrails before ranking.",
+        "factory": mild_long_filter,
+    },
+    "strict": {
+        "label": "Strict",
+        "desc": "Stronger tail guardrails before ranking.",
+        "factory": strict_long_filter,
+    },
+}
+
+LONG_STRATEGY_REGISTRY = {
+    "balanced": {
+        "label": "Balanced",
+        "desc": "Equal emphasis on valuation, fundamentals, and momentum.",
+        "factory": balanced_long_strategy,
+    },
+    "value": {
+        "label": "Value",
+        "desc": "Emphasizes valuation while retaining other groups.",
+        "factory": value_long_strategy,
+    },
+    "momentum": {
+        "label": "Momentum",
+        "desc": "Emphasizes momentum while retaining other groups.",
+        "factory": momentum_long_strategy,
+    },
+    "fundamental": {
+        "label": "Fundamental",
+        "desc": "Emphasizes fundamentals while retaining other groups.",
+        "factory": fundamental_long_strategy,
+    },
+    "value_momentum": {
+        "label": "Value + Momentum",
+        "desc": "Jointly emphasizes valuation and momentum.",
+        "factory": value_momentum_long_strategy,
+    },
+}
+
+
+def build_long_selection(
+    *,
+    filter: str = "mild",
+    strategy: str = "balanced",
+    top_n: int | None = CORE_LONG_TOP_N,
+) -> list[SelectionPolicy]:
+    """Build a long-selection pipeline from filter and strategy presets."""
+    if filter not in LONG_FILTER_REGISTRY:
+        raise ValueError(
+            f"unknown long filter {filter!r}; "
+            f"use one of {list(LONG_FILTER_REGISTRY)}"
+        )
+
+    if strategy not in LONG_STRATEGY_REGISTRY:
+        raise ValueError(
+            f"unknown long strategy {strategy!r}; "
+            f"use one of {list(LONG_STRATEGY_REGISTRY)}"
+        )
+
+    filter_factory = LONG_FILTER_REGISTRY[filter]["factory"]
+    strategy_factory = LONG_STRATEGY_REGISTRY[strategy]["factory"]
+
+    return [
+        filter_factory(),
+        strategy_factory(top_n=top_n),
+    ]
+
+
+def default_long_selection(
+    *,
+    top_n: int | None = CORE_LONG_TOP_N,
+) -> list[SelectionPolicy]:
+    """Return the default Mild + Balanced long-selection pipeline."""
+    return build_long_selection(
+        filter="mild",
+        strategy="balanced",
+        top_n=top_n,
+    )
 
 
 def _completed_months(start, end) -> int:
@@ -91,19 +310,6 @@ def _analysis_history(
     return available_months, earliest_usable_as_of
 
 
-def core_long_selection() -> list[SelectionPolicy]:
-    """Return the default reusable long-selection recipe.
-
-    Step 1 applies loose threshold eligibility rules.
-    Step 2 ranks the remaining universe with the default equal-group score & top_n
-    """
-
-    return [
-        LongThresholdFilter(),
-        LongEqualGroupScore(),
-    ]
-
-
 def apply_selection(
     features: pd.DataFrame,
     policies: Sequence[SelectionPolicy] | None = None,
@@ -114,7 +320,7 @@ def apply_selection(
     """Apply selection policies sequentially to one canonical feature table."""
 
     if policies is None:
-        policies = core_long_selection()
+        policies = default_long_selection()
     else:
         policies = list(policies)
 
@@ -208,7 +414,7 @@ def evaluate_recipe(
             )
 
     if policies is None:
-        policies = core_long_selection()
+        policies = default_long_selection()
     else:
         policies = list(policies)
 
@@ -268,7 +474,6 @@ def evaluate_recipe(
     )
 
 
-
 def selection_trajectory(
     assessment,
     *,
@@ -317,7 +522,7 @@ def selection_trajectory(
         )
 
     if policies is None:
-        policies = core_long_selection()
+        policies = default_long_selection()
     else:
         policies = list(policies)
 
@@ -519,14 +724,14 @@ def selection_trajectory(
 
     if not style:
         return trajectory
-    
+
     # Only tickers selected on the latest assessment date are highlighted.
     latest_tickers = [
         ticker
         for ticker in trajectory.iloc[:, -1]
         if pd.notna(ticker)
     ]
-    
+
     color_map = {
         ticker: (
             f"hsl("
@@ -536,17 +741,17 @@ def selection_trajectory(
         )
         for i, ticker in enumerate(latest_tickers)
     }
-    
+
     def _cell_style(value):
         if pd.isna(value) or value not in color_map:
             return ""
-    
+
         return (
             "background-color: "
             f"{color_map[value]}; "
             "text-align: center"
         )
-    
+
     styler = (
         trajectory.style
         .map(_cell_style)
@@ -556,37 +761,37 @@ def selection_trajectory(
             }
         )
     )
-    
+
     ticker_names = getattr(
         assessment,
         "ticker_names",
         None,
     )
-    
+
     if ticker_names is None:
         return styler
-    
+
     def _ticker_name(ticker):
         if pd.isna(ticker):
             return ""
-    
+
         name = ticker_names.get(
             ticker,
             "",
         )
-    
+
         return (
             ""
             if pd.isna(name)
             else str(name)
         )
-    
+
     tooltips = trajectory.apply(
         lambda column: column.map(
             _ticker_name
         )
     )
-    
+
     return styler.set_tooltips(
         tooltips
     )
