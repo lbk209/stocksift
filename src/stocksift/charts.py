@@ -472,7 +472,7 @@ def browse_price_chart(
     ticker_names: Mapping[str, str] | None = None,
     date_col: str = "date",
     freq: str = "D",
-    period: str = "ALL",
+    period: str = "1Y",
     **plot_kwargs: Any,
 ) -> None:
     """Browse technical charts with persistent indicator checkboxes.
@@ -661,7 +661,7 @@ def plot_price_comparison(
     ticker_names: Mapping[str, str] | None = None,
     date_col: str = "date",
     freq: str = "D",
-    period: str = "ALL",
+    period: str = "1Y",
     base: float | None = 100.0,
     price_line_width: float = 2.0,
     width: int | None = None,
