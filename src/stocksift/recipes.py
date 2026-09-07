@@ -479,7 +479,7 @@ def selection_trajectory(
     *,
     as_of=None,
     policies: Sequence[SelectionPolicy] | None = None,
-    top_n: int = CORE_LONG_TOP_N,
+    top_n: int | None = None,
     freq: int = 5,
     periods: int = 5,
     style: bool = True,
@@ -491,16 +491,17 @@ def selection_trajectory(
     themselves across multiple historical as-of dates.
 
     ``freq`` is measured in available assessment dates rather than calendar
-    days. The supplied policies are respected as-is; ``top_n`` only limits
-    the number of rows displayed from each resulting selection.
+    days. The supplied policies are respected as-is. ``top_n`` optionally
+    limits the number of rows displayed from each resulting selection; when
+    ``None``, the policy result is kept unchanged.
     """
-    if (
+    if top_n is not None and (
         isinstance(top_n, bool)
         or not isinstance(top_n, int)
         or top_n <= 0
     ):
         raise ValueError(
-            "top_n must be a positive integer"
+            "top_n must be a positive integer or None"
         )
 
     if (
@@ -665,11 +666,9 @@ def selection_trajectory(
                 f"selection result is missing rank column {rank_col!r}"
             )
 
-        selected = (
-            selected
-            .sort_values(rank_col)
-            .head(top_n)
-        )
+        selected = selected.sort_values(rank_col)
+        if top_n is not None:
+            selected = selected.head(top_n)
 
         actual_as_of = str(
             features["as_of_date"].iloc[0]
@@ -683,7 +682,7 @@ def selection_trajectory(
 
         selections[actual_as_of] = tickers
 
-        if len(tickers) < top_n:
+        if top_n is not None and len(tickers) < top_n:
             short_counts.append(
                 len(tickers)
             )
@@ -697,12 +696,9 @@ def selection_trajectory(
             stacklevel=2,
         )
 
-    max_rows = min(
-        top_n,
-        max(
-            len(tickers)
-            for tickers in selections.values()
-        ),
+    max_rows = max(
+        len(tickers)
+        for tickers in selections.values()
     )
 
     trajectory = pd.DataFrame(
