@@ -31,7 +31,7 @@ __all__ = [
     "browse_price_comparison",
 ]
 
-_INDICATOR_ORDER = ("ma", "bb", "ichimoku", "volume", "rsi", "mfi", "atr")
+_INDICATOR_ORDER = ("ma", "bb", "ichimoku", "volume", "rsi", "mfi", "atr", "disparity")
 _INDICATORS = set(_INDICATOR_ORDER)
 
 _OHLCV_COLUMNS = ("open", "high", "low", "close", "volume")
@@ -41,8 +41,7 @@ _INDICATOR_SPACING = 6
 
 _PERIOD_OPTIONS = ("3M", "6M", "1Y", "3Y", "ALL")
 
-# Main-panel indicator colors approximated from the supplied Naver chart.
-# Other subplot indicators intentionally keep Plotly's automatic colors.
+# Main-panel colors approximate the supplied Naver chart.
 _MA_COLORS = {
     5: "#58BF40",
     20: "#EE4747",
@@ -58,7 +57,20 @@ _ICHIMOKU_COLORS = {
     "senkou_b": "#FF6B6F",
     "chikou": "#828282",
 }
-_ICHIMOKU_FILL_COLOR = "rgba(255, 107, 111, 0.25)"
+_ICHIMOKU_POSITIVE_FILL_COLOR = "rgba(255, 107, 111, 0.25)"
+_ICHIMOKU_NEGATIVE_FILL_COLOR = "rgba(55, 153, 239, 0.20)"
+
+_RSI_COLOR = "#636EFA"
+_RSI_FILL_COLOR = "rgba(99, 110, 250, 0.10)"
+_MFI_COLOR = "#AB63FA"
+_MFI_FILL_COLOR = "rgba(171, 99, 250, 0.10)"
+
+_DISPARITY_COLORS = {
+    5: "#58BF40",
+    10: "#00C8E8",
+    20: "#EE4747",
+    60: "#F48416",
+}
 
 
 def plot_price_chart(
@@ -77,6 +89,7 @@ def plot_price_chart(
     rsi_window: int = 14,
     atr_window: int = 14,
     mfi_window: int = 14,
+    disparity_windows: Sequence[int] = (5, 10, 20, 60),
     ichimoku_windows: tuple[int, int, int] = (9, 26, 52),
     ichimoku_displacement: int = 26,
     price_line_width: float = 2.0,
@@ -88,7 +101,7 @@ def plot_price_chart(
 
     OHLCV input uses a candlestick chart; close-only input uses a close line.
     MA and Volume are visible by default for OHLCV data, while close-only data
-    defaults to MA only. Bollinger, RSI, Ichimoku, ATR, and MFI are optional.
+    defaults to MA only. Bollinger, RSI, Ichimoku, ATR, MFI, and Disparity are optional.
 
     Technical indicators are calculated from the full available history,
     then the selected period is displayed. Close-only input uses approximate
@@ -118,6 +131,7 @@ def plot_price_chart(
         raise ValueError("visible_indicators must be included in indicators")
 
     _check_windows(ma_windows, "ma_windows")
+    _check_windows(disparity_windows, "disparity_windows")
     _check_windows(
         (bb_window, rsi_window, atr_window, mfi_window),
         "indicator windows",
@@ -146,12 +160,14 @@ def plot_price_chart(
     has_rsi = "rsi" in indicators
     has_mfi = "mfi" in indicators
     has_atr = "atr" in indicators
+    has_disparity = "disparity" in indicators
     has_volume = "volume" in indicators
 
     extra_panels = (
         int(has_rsi)
         + int(has_mfi)
         + int(has_atr)
+        + int(has_disparity)
         + int(has_volume)
     )
     rows = 1 + extra_panels
@@ -176,6 +192,7 @@ def plot_price_chart(
     rsi_row = None
     mfi_row = None
     atr_row = None
+    disparity_row = None
     volume_row = None
 
     if has_rsi:
@@ -183,6 +200,9 @@ def plot_price_chart(
         next_row += 1
     if has_mfi:
         mfi_row = next_row
+        next_row += 1
+    if has_disparity:
+        disparity_row = next_row
         next_row += 1
     if has_atr:
         atr_row = next_row
@@ -304,14 +324,77 @@ def plot_price_chart(
             "Ichimoku" if price_kind == "ohlcv"
             else "Approx. Ichimoku"
         )
+
+        # Draw each consecutive cloud regime separately so Plotly does not
+        # connect non-adjacent positive/negative regions across reversals.
+        cloud_valid = (
+            ichi["senkou_a"].notna()
+            & ichi["senkou_b"].notna()
+        )
+        cloud_positive = (
+            ichi["senkou_a"] >= ichi["senkou_b"]
+        ).where(cloud_valid)
+
+        regime_groups = (
+            cloud_positive.ne(cloud_positive.shift())
+            .cumsum()
+        )
+
+        for _, regime in ichi.loc[cloud_valid].groupby(
+            regime_groups.loc[cloud_valid]
+        ):
+            if len(regime) < 2:
+                continue
+
+            positive = (
+                regime["senkou_a"].iloc[0]
+                >= regime["senkou_b"].iloc[0]
+            )
+            fillcolor = (
+                _ICHIMOKU_POSITIVE_FILL_COLOR
+                if positive
+                else _ICHIMOKU_NEGATIVE_FILL_COLOR
+            )
+
+            fig.add_trace(
+                go.Scatter(
+                    x=regime.index,
+                    y=regime["senkou_a"],
+                    mode="lines",
+                    line=dict(width=0),
+                    legendgroup="ichimoku",
+                    showlegend=False,
+                    hoverinfo="skip",
+                    visible=state,
+                ),
+                row=1,
+                col=1,
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=regime.index,
+                    y=regime["senkou_b"],
+                    mode="lines",
+                    line=dict(width=0),
+                    legendgroup="ichimoku",
+                    showlegend=False,
+                    hoverinfo="skip",
+                    fill="tonexty",
+                    fillcolor=fillcolor,
+                    visible=state,
+                ),
+                row=1,
+                col=1,
+            )
+
         traces = [
-            ("tenkan", ichimoku_name, True, None),
-            ("kijun", "Kijun", False, None),
-            ("senkou_a", "Senkou A", False, None),
-            ("senkou_b", "Senkou B", False, "tonexty"),
-            ("chikou", "Chikou", False, None),
+            ("tenkan", ichimoku_name, True),
+            ("kijun", "Kijun", False),
+            ("senkou_a", "Senkou A", False),
+            ("senkou_b", "Senkou B", False),
+            ("chikou", "Chikou", False),
         ]
-        for column, name, showlegend, fill in traces:
+        for column, name, showlegend in traces:
             fig.add_trace(
                 go.Scatter(
                     x=ichi.index,
@@ -324,12 +407,6 @@ def plot_price_chart(
                     ),
                     legendgroup="ichimoku",
                     showlegend=showlegend,
-                    fill=fill,
-                    fillcolor=(
-                        _ICHIMOKU_FILL_COLOR
-                        if fill is not None
-                        else None
-                    ),
                     visible=state,
                 ),
                 row=1,
@@ -361,13 +438,48 @@ def plot_price_chart(
         rsi = _rsi(data["close"], window=rsi_window)
         rsi = rsi.loc[view.index]
 
+        for lower, upper in ((70, 100), (0, 30)):
+            fig.add_trace(
+                go.Scatter(
+                    x=rsi.index,
+                    y=[lower] * len(rsi),
+                    mode="lines",
+                    line=dict(width=0),
+                    legendgroup="rsi",
+                    showlegend=False,
+                    hoverinfo="skip",
+                    visible=state,
+                ),
+                row=rsi_row,
+                col=1,
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=rsi.index,
+                    y=[upper] * len(rsi),
+                    mode="lines",
+                    line=dict(width=0),
+                    legendgroup="rsi",
+                    showlegend=False,
+                    hoverinfo="skip",
+                    fill="tonexty",
+                    fillcolor=_RSI_FILL_COLOR,
+                    visible=state,
+                ),
+                row=rsi_row,
+                col=1,
+            )
+
         fig.add_trace(
             go.Scatter(
                 x=rsi.index,
                 y=rsi,
                 mode="lines",
                 name=f"RSI{rsi_window}",
-                line=dict(width=indicator_line_width),
+                line=dict(
+                    width=indicator_line_width,
+                    color=_RSI_COLOR,
+                ),
                 legendgroup="rsi",
                 visible=state,
             ),
@@ -384,6 +496,7 @@ def plot_price_chart(
                     line=dict(
                         width=indicator_line_width,
                         dash="dot",
+                        color=_RSI_COLOR,
                     ),
                     name=f"RSI {level}",
                     legendgroup="rsi",
@@ -407,13 +520,48 @@ def plot_price_chart(
         mfi = _mfi(data, window=mfi_window)
         mfi = mfi.loc[view.index]
 
+        for lower, upper in ((80, 100), (0, 20)):
+            fig.add_trace(
+                go.Scatter(
+                    x=mfi.index,
+                    y=[lower] * len(mfi),
+                    mode="lines",
+                    line=dict(width=0),
+                    legendgroup="mfi",
+                    showlegend=False,
+                    hoverinfo="skip",
+                    visible=state,
+                ),
+                row=mfi_row,
+                col=1,
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=mfi.index,
+                    y=[upper] * len(mfi),
+                    mode="lines",
+                    line=dict(width=0),
+                    legendgroup="mfi",
+                    showlegend=False,
+                    hoverinfo="skip",
+                    fill="tonexty",
+                    fillcolor=_MFI_FILL_COLOR,
+                    visible=state,
+                ),
+                row=mfi_row,
+                col=1,
+            )
+
         fig.add_trace(
             go.Scatter(
                 x=mfi.index,
                 y=mfi,
                 mode="lines",
                 name=f"MFI{mfi_window}",
-                line=dict(width=indicator_line_width),
+                line=dict(
+                    width=indicator_line_width,
+                    color=_MFI_COLOR,
+                ),
                 legendgroup="mfi",
                 visible=state,
             ),
@@ -430,6 +578,7 @@ def plot_price_chart(
                     line=dict(
                         width=indicator_line_width,
                         dash="dot",
+                        color=_MFI_COLOR,
                     ),
                     name=f"MFI {level}",
                     legendgroup="mfi",
@@ -445,6 +594,56 @@ def plot_price_chart(
             title_text="MFI",
             range=[0, 100],
             row=mfi_row,
+            col=1,
+        )
+
+    if has_disparity:
+        state = _visibility("disparity", visible)
+        disparity = _disparity(
+            data["close"],
+            windows=disparity_windows,
+        ).loc[view.index]
+
+        for window in disparity_windows:
+            fig.add_trace(
+                go.Scatter(
+                    x=disparity.index,
+                    y=disparity[window],
+                    mode="lines",
+                    name=f"Disparity{window}",
+                    line=dict(
+                        width=indicator_line_width,
+                        color=_DISPARITY_COLORS.get(window),
+                    ),
+                    legendgroup="disparity",
+                    visible=state,
+                ),
+                row=disparity_row,
+                col=1,
+            )
+
+        fig.add_trace(
+            go.Scatter(
+                x=disparity.index,
+                y=[100] * len(disparity),
+                mode="lines",
+                line=dict(
+                    width=indicator_line_width,
+                    dash="dot",
+                ),
+                name="Disparity 100",
+                legendgroup="disparity",
+                showlegend=False,
+                hoverinfo="skip",
+                visible=state,
+            ),
+            row=disparity_row,
+            col=1,
+        )
+
+        fig.update_yaxes(
+            title_text="Disparity",
+            row=disparity_row,
             col=1,
         )
 
@@ -535,9 +734,9 @@ def browse_price_chart(
 ) -> None:
     """Browse technical charts with persistent indicator checkboxes.
 
-    Ticker, frequency, indicator, and period controls are separate UI groups.
-    The spacing between groups is equal. Indicator checkbox state is preserved
-    when the ticker, frequency, or period changes.
+    Ticker, frequency, and period controls share the first row; indicator
+    checkboxes use the second row. Indicator state is preserved when the
+    ticker, frequency, or period changes.
     """
     widgets, display, clear_output = _notebook_tools()
     tickers = _check_tickers(prices, tickers, date_col=date_col)
@@ -604,6 +803,7 @@ def browse_price_chart(
         "atr": "ATR",
         "mfi": "MFI",
         "volume": "Volume",
+        "disparity": "Disparity",
     }
     indicator_help = {
         "ma": "Price trend",
@@ -681,7 +881,7 @@ def browse_price_chart(
     period_group = widgets.Box(
         [period_selector],
     )
-    
+
     controls_top = widgets.HBox(
         [
             ticker_group,
@@ -693,7 +893,7 @@ def browse_price_chart(
             flex_flow="row",
         ),
     )
-    
+
     controls = widgets.VBox(
         [
             controls_top,
@@ -1019,7 +1219,7 @@ def _available_indicators(
     if kind == "ohlcv":
         return set(_INDICATOR_ORDER)
 
-    return {"ma", "bb", "rsi", "ichimoku"}
+    return {"ma", "bb", "rsi", "ichimoku", "disparity"}
 
 
 def _ticker_price_periods(
@@ -1207,6 +1407,20 @@ def _bollinger(
         {
             "upper": middle + n_std * std,
             "lower": middle - n_std * std,
+        }
+    )
+
+
+
+def _disparity(
+    close: pd.Series,
+    *,
+    windows: Sequence[int],
+) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            window: close / close.rolling(window).mean() * 100
+            for window in windows
         }
     )
 

@@ -10,13 +10,15 @@ from typing import Iterable
 
 import pandas as pd
 
-from .policy import CORE_LONG_TOP_N, SelectionPolicy
+from .policy import SelectionPolicy
 from .recipes import (
     LONG_FILTER_REGISTRY,
     LONG_STRATEGY_REGISTRY,
     apply_selection,
     build_long_selection,
 )
+
+CORE_LONG_TOP_N = 20
 
 __all__ = [
     "LongSelectionWidget",
