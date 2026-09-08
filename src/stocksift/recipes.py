@@ -65,6 +65,18 @@ VALUE_MOMENTUM_LONG_GROUP_WEIGHTS = {
     "momentum": 0.40,
 }
 
+FUNDAMENTAL_MOMENTUM_LONG_GROUP_WEIGHTS = {
+    "valuation": 0.20,
+    "fundamentals": 0.40,
+    "momentum": 0.40,
+}
+
+VALUE_FUNDAMENTAL_LONG_GROUP_WEIGHTS = {
+    "valuation": 0.40,
+    "fundamentals": 0.40,
+    "momentum": 0.20,
+}
+
 
 def _weighted_group_rules() -> dict[str, dict[str, dict[str, object]]]:
     """Convert the default group directions to LongGroupScore rule format."""
@@ -161,6 +173,28 @@ def value_momentum_long_strategy(
     )
 
 
+def value_fundamental_long_strategy(
+    *,
+    top_n: int | None = CORE_LONG_TOP_N,
+) -> LongGroupScore:
+    """Jointly emphasize valuation and fundamentals."""
+    return _weighted_long_strategy(
+        VALUE_FUNDAMENTAL_LONG_GROUP_WEIGHTS,
+        top_n=top_n,
+    )
+
+
+def fundamental_momentum_long_strategy(
+    *,
+    top_n: int | None = CORE_LONG_TOP_N,
+) -> LongGroupScore:
+    """Jointly emphasize fundamentals and momentum."""
+    return _weighted_long_strategy(
+        FUNDAMENTAL_MOMENTUM_LONG_GROUP_WEIGHTS,
+        top_n=top_n,
+    )
+
+
 LONG_FILTER_REGISTRY = {
     "mild": {
         "label": "Mild",
@@ -195,10 +229,20 @@ LONG_STRATEGY_REGISTRY = {
         "desc": "Emphasizes fundamentals while retaining other groups.",
         "factory": fundamental_long_strategy,
     },
+    "value_fundamental": {
+        "label": "Value + Fundamental",
+        "desc": "Jointly emphasizes valuation and fundamentals.",
+        "factory": value_fundamental_long_strategy,
+    },
     "value_momentum": {
         "label": "Value + Momentum",
         "desc": "Jointly emphasizes valuation and momentum.",
         "factory": value_momentum_long_strategy,
+    },
+    "fundamental_momentum": {
+        "label": "Fundamental + Momentum",
+        "desc": "Jointly emphasizes fundamentals and momentum.",
+        "factory": fundamental_momentum_long_strategy,
     },
 }
 
