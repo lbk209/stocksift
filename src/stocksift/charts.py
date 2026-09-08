@@ -31,7 +31,7 @@ __all__ = [
     "browse_price_comparison",
 ]
 
-_INDICATOR_ORDER = ("ma", "bb", "ichimoku", "volume", "rsi", "mfi", "atr", "disparity")
+_INDICATOR_ORDER = ("ma", "bb", "ichimoku", "rsi", "mfi", "disparity", "atr", "volume")
 _INDICATORS = set(_INDICATOR_ORDER)
 
 _OHLCV_COLUMNS = ("open", "high", "low", "close", "volume")
