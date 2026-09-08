@@ -38,7 +38,6 @@ _OHLCV_COLUMNS = ("open", "high", "low", "close", "volume")
 
 _CONTROL_GROUP_SPACING = 12
 _INDICATOR_SPACING = 6
-_CONTROL_HEIGHT = "30px"
 
 _PERIOD_OPTIONS = ("3M", "6M", "1Y", "3Y", "ALL")
 
@@ -492,7 +491,7 @@ def plot_price_chart(
         ),
         width=width,
         height=height,
-        margin=dict(l=50, r=30, t=60, b=40),
+        margin=dict(l=50, r=30, t=25, b=40),
     )
     fig.update_traces(xaxis="x")
 
@@ -653,10 +652,6 @@ def browse_price_chart(
         indicator_items,
         layout=widgets.Layout(
             align_items="center",
-            # Keep a fixed height without showing scrollbars or arrows
-            height=_CONTROL_HEIGHT, width="max-content", overflow="hidden",
-            border="1px solid #ccc",
-            padding="0 6px",
         ),
     )
 
@@ -682,27 +677,28 @@ def browse_price_chart(
             margin=group_margin,
         ),
     )
-    indicator_group = widgets.Box(
-        [indicator_controls],
-        layout=widgets.Layout(
-            margin=group_margin,
-        ),
-    )
+
     period_group = widgets.Box(
         [period_selector],
     )
-
-    controls = widgets.HBox(
+    
+    controls_top = widgets.HBox(
         [
             ticker_group,
             freq_group,
-            indicator_group,
             period_group,
         ],
         layout=widgets.Layout(
             align_items="center",
             flex_flow="row",
         ),
+    )
+    
+    controls = widgets.VBox(
+        [
+            controls_top,
+            indicator_controls,
+        ]
     )
     output = widgets.Output()
 
@@ -813,7 +809,7 @@ def plot_price_comparison(
         yaxis_title=yaxis_title,
         width=width,
         height=height,
-        margin=dict(l=50, r=30, t=60, b=40),
+        margin=dict(l=50, r=30, t=25, b=40),
     )
 
 
