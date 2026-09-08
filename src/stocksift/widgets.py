@@ -33,10 +33,10 @@ class LongSelectionWidget:
     names. Strategy labels never show counts because strategies rank the
     already-eligible universe rather than define a separate eligibility set.
 
-    ``policies`` always reflects the current widget choices and can be passed
-    directly to other selection/evaluation functions. ``info`` provides
-    display metadata for the current recipe. ``select()`` additionally
-    requires a bound feature table.
+    ``label`` provides the current recipe display name. ``info`` provides
+    detailed display metadata. ``policies`` always reflects the current widget
+    choices and can be passed directly to other selection/evaluation functions.
+    ``select()`` additionally requires a bound feature table.
     """
 
     def __init__(
@@ -154,15 +154,6 @@ class LongSelectionWidget:
         return value
 
     @property
-    def value(self) -> dict[str, object]:
-        """Return the current widget choices."""
-        return {
-            "filter": self.filter,
-            "strategy": self.strategy,
-            "top_n": self.top_n,
-        }
-
-    @property
     def info(self) -> dict[str, object]:
         """Return display metadata for the current selection recipe."""
         filter_spec = LONG_FILTER_REGISTRY[self.filter]
@@ -183,6 +174,11 @@ class LongSelectionWidget:
             },
             "top_n": self.top_n,
         }
+
+    @property
+    def label(self) -> str:
+        """Return the display label for the current selection recipe."""
+        return str(self.info["label"])
 
     @property
     def policies(self) -> list[SelectionPolicy]:
@@ -241,8 +237,9 @@ def long_selection_widget(
     selected = controls.select()
 
     controls = long_selection_widget()
-    policies = controls.policies
+    label = controls.label
     info = controls.info
+    policies = controls.policies
     """
     controls = LongSelectionWidget(
         features,

@@ -497,7 +497,29 @@ def plot_price_chart(
     fig.update_traces(xaxis="x")
 
     fig.update_yaxes(title_text="Price", row=1, col=1)
-    fig.update_xaxes(rangeslider_visible=False)
+
+    # For daily charts, keep a true date axis but hide dates on which none of
+    # the supplied tickers has usable price data. Weekly data is already
+    # aggregated to weekly observations, so daily range breaks are not applied.
+    if freq == "D":
+        market_dates = _market_dates(prices, date_col=date_col)
+        calendar_dates = pd.date_range(
+            start=pd.Timestamp(view.index.min()).normalize(),
+            end=pd.Timestamp(view.index.max()).normalize(),
+            freq="D",
+        )
+        missing_dates = calendar_dates.difference(market_dates)
+
+        fig.update_xaxes(
+            rangeslider_visible=False,
+            rangebreaks=(
+                [dict(values=missing_dates)]
+                if len(missing_dates)
+                else []
+            ),
+        )
+    else:
+        fig.update_xaxes(rangeslider_visible=False)
 
     return fig
 
@@ -584,27 +606,55 @@ def browse_price_chart(
         "mfi": "MFI",
         "volume": "Volume",
     }
+    indicator_help = {
+        "ma": "Price trend",
+        "bb": "Volatility around a moving average",
+        "rsi": "0-100 momentum; overbought/oversold",
+        "ichimoku": "Trend/support-resistance; approximate with close-only data",
+        "atr": "Volatility, not direction",
+        "mfi": "Volume-weighted 0-100 momentum",
+        "volume": "Trading volume",
+        "disparity": "Price distance from a moving average",
+    }
     indicator_checks = {}
+    indicator_items = []
 
     for indicator in _INDICATOR_ORDER:
         if indicator not in available_indicators:
             continue
 
-        indicator_checks[indicator] = widgets.Checkbox(
+        checkbox = widgets.Checkbox(
             value=indicator in initial_visible,
-            description=indicator_labels[indicator],
+            description="",
+            tooltip=indicator_help[indicator],
             indent=False,
-            layout=widgets.Layout(
-                width="auto",
-                margin=f"0 {_INDICATOR_SPACING}px 0 0",
+            layout=widgets.Layout(width="auto"),
+        )
+        label = widgets.HTML(
+            value=(
+                f'<span title="{indicator_help[indicator]}">'
+                f'{indicator_labels[indicator]}</span>'
             ),
         )
 
+        indicator_checks[indicator] = checkbox
+        indicator_items.append(
+            widgets.HBox(
+                [checkbox, label],
+                layout=widgets.Layout(
+                    align_items="center",
+                    width="auto",
+                    margin=f"0 {_INDICATOR_SPACING}px 0 0",
+                ),
+            )
+        )
+
     indicator_controls = widgets.HBox(
-        list(indicator_checks.values()),
+        indicator_items,
         layout=widgets.Layout(
             align_items="center",
-            height=_CONTROL_HEIGHT,
+            # Keep a fixed height without showing scrollbars or arrows
+            height=_CONTROL_HEIGHT, width="max-content", overflow="hidden",
             border="1px solid #ccc",
             padding="0 6px",
         ),
@@ -920,6 +970,47 @@ def _price_kind(
         f"{date_col!r} plus ticker columns, or a 2-level (date, ticker) "
         "MultiIndex with open/high/low/close/volume columns"
     )
+
+
+def _market_dates(
+    prices: pd.DataFrame,
+    *,
+    date_col: str,
+) -> pd.DatetimeIndex:
+    """Return dates with usable price data for at least one ticker."""
+    kind = _price_kind(prices, date_col=date_col)
+
+    if kind == "close":
+        ticker_cols = [
+            column
+            for column in prices.columns
+            if column != date_col
+        ]
+        valid = (
+            prices[ticker_cols]
+            .apply(pd.to_numeric, errors="coerce")
+            .notna()
+            .any(axis=1)
+        )
+        dates = pd.to_datetime(
+            prices.loc[valid, date_col],
+            errors="coerce",
+        )
+    else:
+        valid = pd.to_numeric(
+            prices["close"],
+            errors="coerce",
+        ).notna()
+        dates = pd.to_datetime(
+            prices.loc[valid].index.get_level_values(0),
+            errors="coerce",
+        )
+
+    dates = pd.DatetimeIndex(dates).dropna().unique().sort_values()
+    if dates.empty:
+        raise ValueError("prices contain no usable market dates")
+
+    return dates
 
 
 def _available_indicators(

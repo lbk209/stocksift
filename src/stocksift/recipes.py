@@ -728,12 +728,20 @@ def selection_trajectory(
         if pd.notna(ticker)
     ]
 
+    min_lightness = 70
+    max_lightness = 95
     color_map = {
         ticker: (
             f"hsl("
             #f"{round(i * 360 / max(len(latest_tickers), 1))}, "
             f"{round(i * 180 / max(len(latest_tickers) - 1, 1))}, "
-            f"55%, 85%)"
+            f"55% ,"
+            f"{round(
+                min_lightness
+                + i * (max_lightness - min_lightness)
+                / max(len(latest_tickers) - 1, 1)
+            )}%)"
+            #85%)"
         )
         for i, ticker in enumerate(latest_tickers)
     }
