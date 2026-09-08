@@ -37,7 +37,7 @@ _INDICATORS = set(_INDICATOR_ORDER)
 _OHLCV_COLUMNS = ("open", "high", "low", "close", "volume")
 
 _CONTROL_GROUP_SPACING = 12
-_INDICATOR_SPACING = 6
+_INDICATOR_SPACING = 12
 
 _PERIOD_OPTIONS = ("3M", "6M", "1Y", "3Y", "ALL")
 
@@ -172,19 +172,20 @@ def plot_price_chart(
     )
     rows = 1 + extra_panels
 
+    main_panel_height = 500
+    indicator_panel_height = 90
+    
     if rows == 1:
         fig = make_subplots(rows=1, cols=1)
     else:
-        panel_height = 0.14
-        main_height = 1.0 - panel_height * extra_panels
         fig = make_subplots(
             rows=rows,
             cols=1,
             shared_xaxes=True,
-            vertical_spacing=0.025,
+            vertical_spacing=0.015,
             row_heights=[
-                main_height,
-                *([panel_height] * extra_panels),
+                main_panel_height,
+                *([indicator_panel_height] * extra_panels),
             ],
         )
 
@@ -438,37 +439,26 @@ def plot_price_chart(
         rsi = _rsi(data["close"], window=rsi_window)
         rsi = rsi.loc[view.index]
 
-        for lower, upper in ((70, 100), (0, 30)):
-            fig.add_trace(
-                go.Scatter(
-                    x=rsi.index,
-                    y=[lower] * len(rsi),
-                    mode="lines",
-                    line=dict(width=0),
-                    legendgroup="rsi",
-                    showlegend=False,
-                    hoverinfo="skip",
-                    visible=state,
-                ),
-                row=rsi_row,
-                col=1,
-            )
-            fig.add_trace(
-                go.Scatter(
-                    x=rsi.index,
-                    y=[upper] * len(rsi),
-                    mode="lines",
-                    line=dict(width=0),
-                    legendgroup="rsi",
-                    showlegend=False,
-                    hoverinfo="skip",
-                    fill="tonexty",
-                    fillcolor=_RSI_FILL_COLOR,
-                    visible=state,
-                ),
-                row=rsi_row,
-                col=1,
-            )
+        _add_threshold_fill(
+            fig,
+            rsi,
+            level=70,
+            above=True,
+            fillcolor=_RSI_FILL_COLOR,
+            legendgroup="rsi",
+            visible=state,
+            row=rsi_row,
+        )
+        _add_threshold_fill(
+            fig,
+            rsi,
+            level=30,
+            above=False,
+            fillcolor=_RSI_FILL_COLOR,
+            legendgroup="rsi",
+            visible=state,
+            row=rsi_row,
+        )
 
         fig.add_trace(
             go.Scatter(
@@ -520,37 +510,26 @@ def plot_price_chart(
         mfi = _mfi(data, window=mfi_window)
         mfi = mfi.loc[view.index]
 
-        for lower, upper in ((80, 100), (0, 20)):
-            fig.add_trace(
-                go.Scatter(
-                    x=mfi.index,
-                    y=[lower] * len(mfi),
-                    mode="lines",
-                    line=dict(width=0),
-                    legendgroup="mfi",
-                    showlegend=False,
-                    hoverinfo="skip",
-                    visible=state,
-                ),
-                row=mfi_row,
-                col=1,
-            )
-            fig.add_trace(
-                go.Scatter(
-                    x=mfi.index,
-                    y=[upper] * len(mfi),
-                    mode="lines",
-                    line=dict(width=0),
-                    legendgroup="mfi",
-                    showlegend=False,
-                    hoverinfo="skip",
-                    fill="tonexty",
-                    fillcolor=_MFI_FILL_COLOR,
-                    visible=state,
-                ),
-                row=mfi_row,
-                col=1,
-            )
+        _add_threshold_fill(
+            fig,
+            mfi,
+            level=80,
+            above=True,
+            fillcolor=_MFI_FILL_COLOR,
+            legendgroup="mfi",
+            visible=state,
+            row=mfi_row,
+        )
+        _add_threshold_fill(
+            fig,
+            mfi,
+            level=20,
+            above=False,
+            fillcolor=_MFI_FILL_COLOR,
+            legendgroup="mfi",
+            visible=state,
+            row=mfi_row,
+        )
 
         fig.add_trace(
             go.Scatter(
@@ -650,6 +629,7 @@ def plot_price_chart(
     if has_atr:
         state = _visibility("atr", visible)
         atr = _atr(data, window=atr_window)
+        atr = atr / data["close"] * 100
         atr = atr.loc[view.index]
 
         fig.add_trace(
@@ -677,7 +657,7 @@ def plot_price_chart(
     freq_label = "Daily" if freq == "D" else "Weekly"
 
     if height is None:
-        height = 600 + 110 * extra_panels
+        height = 600 + indicator_panel_height * extra_panels
 
     fig.update_layout(
         #title=f"{label} — {freq_label}",
@@ -810,7 +790,7 @@ def browse_price_chart(
         "bb": "Volatility around a moving average",
         "rsi": "0-100 momentum; overbought/oversold",
         "ichimoku": "Trend/support-resistance; approximate with close-only data",
-        "atr": "Volatility, not direction",
+        "atr": "Recent volatility as % of price",
         "mfi": "Volume-weighted 0-100 momentum",
         "volume": "Trading volume",
         "disparity": "Price distance from a moving average",
@@ -827,12 +807,19 @@ def browse_price_chart(
             description="",
             tooltip=indicator_help[indicator],
             indent=False,
-            layout=widgets.Layout(width="auto"),
+            layout=widgets.Layout(
+                width="20px",
+                min_width="20px",
+                margin="0",
+            ),
         )
         label = widgets.HTML(
             value=(
                 f'<span title="{indicator_help[indicator]}">'
                 f'{indicator_labels[indicator]}</span>'
+            ),
+            layout=widgets.Layout(
+                margin="0 0 0 -2px",
             ),
         )
 
@@ -1141,6 +1128,65 @@ def browse_price_comparison(
     render()
 
     display(widgets.VBox([controls, output]))
+
+
+
+def _add_threshold_fill(
+    fig: go.Figure,
+    values: pd.Series,
+    *,
+    level: float,
+    above: bool,
+    fillcolor: str,
+    legendgroup: str,
+    visible: bool | str,
+    row: int,
+) -> None:
+    valid = values.notna()
+    breached = (
+        values.gt(level)
+        if above
+        else values.lt(level)
+    ) & valid
+
+    groups = breached.ne(breached.shift()).cumsum()
+
+    for _, segment in values.loc[breached].groupby(
+        groups.loc[breached]
+    ):
+        if len(segment) < 2:
+            continue
+
+        fig.add_trace(
+            go.Scatter(
+                x=segment.index,
+                y=[level] * len(segment),
+                mode="lines",
+                line=dict(width=0),
+                legendgroup=legendgroup,
+                showlegend=False,
+                hoverinfo="skip",
+                visible=visible,
+            ),
+            row=row,
+            col=1,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=segment.index,
+                y=segment,
+                mode="lines",
+                line=dict(width=0),
+                legendgroup=legendgroup,
+                showlegend=False,
+                hoverinfo="skip",
+                fill="tonexty",
+                fillcolor=fillcolor,
+                visible=visible,
+            ),
+            row=row,
+            col=1,
+        )
 
 
 def _price_kind(
