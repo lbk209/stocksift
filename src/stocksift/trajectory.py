@@ -96,6 +96,34 @@ class TrajectoryExplorer:
     
         return selected
 
+
+
+    def diagnose(self, *, as_of=None, policies=None):
+        """Show historical coverage and threshold-filter diagnostics."""
+        from .recipes import default_long_selection
+    
+        if policies is None:
+            policies = (
+                self.controls.policies
+                if self.controls is not None
+                else default_long_selection()
+            )
+    
+        features = self.assessment.assess(
+            as_of=as_of,
+            print_msg=True,
+        )
+    
+        policy = policies[0]
+        if not hasattr(policy, "trace"):
+            raise ValueError(
+                "The first selection policy does not support trace()."
+            )
+    
+        return policy.trace(features)
+
+        
+
     def fetch_prices(
         self,
         *,

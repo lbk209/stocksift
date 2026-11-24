@@ -699,11 +699,16 @@ def selection_trajectory(
             print_msg=False,
         )
 
-        selected = apply_selection(
-            features,
-            policies=policies,
-            show_count=False,
-        )
+        try:
+            selected = apply_selection(
+                features,
+                policies=policies,
+                show_count=False,
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"{exc} (as_of={features['as_of_date'].iloc[0]})"
+            ) from exc
 
         if rank_col not in selected.columns:
             raise ValueError(
